@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Drawing;
 using System.Globalization;
 using System.Linq;
@@ -180,19 +181,65 @@ namespace MiniCheat
             Touch.HookNumberBox(txtVal);
         }
 
-        // 게임기 모드: 화면 가득, 글자·버튼 1.5배, 숫자는 큰 숫자판
-        void SetGameMode(bool on)
+        // 게임기 모드: 휴대폰 앱 같은 큰 화면(MobileForm)으로 바꿈
+        MobileForm mobile;
+        internal void SetGameMode(bool on)
         {
-            if (on == Touch.On) return;
-            Touch.On = on;
-            Touch.Scale(this, on ? Touch.F : 1 / Touch.F);
-            WindowState = on ? FormWindowState.Maximized : FormWindowState.Normal;
-            btnGame.BackColor = on ? Color.FromArgb(60, 130, 220) : SystemColors.Control;
-            btnGame.ForeColor = on ? Color.White : SystemColors.ControlText;
-            btnGame.UseVisualStyleBackColor = !on;
-            saveEd.TouchChanged();
             Touch.SaveSetting(on);
+            if (on)
+            {
+                if (mobile != null) return;
+                mobile = new MobileForm(this);
+                mobile.FormClosed += (s, e) =>
+                {
+                    bool back = mobile.BackToPc;
+                    mobile = null;
+                    if (back) { Show(); Activate(); } else Close();
+                };
+                Hide();
+                mobile.Show();
+            }
+            else if (mobile != null) { mobile.BackToPc = true; mobile.Close(); }
         }
+
+        // ── 게임기 모드 화면이 쓰는 것들 ──
+        internal void CheckUpdatePublic() { CheckUpdate(true); }
+        internal bool HasProcess { get { return h != IntPtr.Zero; } }
+        internal IntPtr H { get { return h; } }
+        internal string ProcText { get { return lblProc.Text; } }
+        internal string RunningGameDir
+        {
+            get
+            {
+                if (proc == null) return null;
+                string exe = Native.ExePath(proc.Id);
+                if (exe == null) return null;
+                string d = Path.GetDirectoryName(exe);
+                return GameData.DetectKind(d) == RpgKind.Unknown ? null : d;
+            }
+        }
+        internal void AttachProc(Process p) { Attach(p); }
+        internal string ValueText { get { return txtVal.Text; } set { txtVal.Text = value; } }
+        internal string[] KindList { get { return KindNames; } }
+        internal int KindIndex { get { return cmbKind.SelectedIndex; } set { if (!scanned) cmbKind.SelectedIndex = value; } }
+        internal string[] CmpList { get { return scanned ? NextCmps : FirstCmps; } }
+        internal int CmpIndex { get { return Math.Max(0, cmbCmp.SelectedIndex); } set { cmbCmp.SelectedIndex = value; } }
+        internal bool Scanned { get { return scanned; } }
+        internal Scanner Sc { get { return busy ? null : sc; } }
+        internal string ResultText { get { return lblCount.Text; } }
+        internal void NewScan() { ResetScan(); }
+        internal Task DoScan(bool first) { return Scan(first); }
+        internal List<Saved> SavedList { get { return saved; } }
+        internal void AddSavedAddr(long a, VK k) { AddSaved(a, k); }
+        internal void SetSavedValue(int i, double v)
+        {
+            var sv = saved[i];
+            Scanner.WriteValue(h, sv.Addr, sv.Kind, v);
+            if (sv.Frozen) sv.FrozenVal = v;
+        }
+        internal void ToggleFreeze(int i) { lvSaved.Items[i].Checked = !lvSaved.Items[i].Checked; }
+        internal void RenameSaved(int i, string t) { saved[i].Desc = t; lvSaved.Items[i].Text = t; }
+        internal void RemoveSaved(int i) { saved.RemoveAt(i); lvSaved.Items.RemoveAt(i); }
 
         protected override void OnShown(EventArgs e)
         {
@@ -318,7 +365,7 @@ namespace MiniCheat
             return double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out v);
         }
 
-        async void Scan(bool first)
+        async Task Scan(bool first)
         {
             if (busy || h == IntPtr.Zero) return;
             if (!Alive()) { MessageBox.Show(this, "게임이 꺼진 것 같아요. 프로세스를 다시 골라 주세요.", "미니 치트"); return; }

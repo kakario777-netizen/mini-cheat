@@ -151,7 +151,7 @@ namespace MiniCheat
             settingGame = false;
         }
 
-        static string QuickTitle(string root)
+        internal static string QuickTitle(string root)
         {
             try
             {
