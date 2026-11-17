@@ -37,6 +37,54 @@ namespace MiniCheat
         readonly Dictionary<string, string> gameTr = new Dictionary<string, string>();   // 게임에 들어 있는 번역 (원문 → 한글)
         readonly Dictionary<string, string> locale = new Dictionary<string, string>();   // 번역 키 → 한글
         public int GameTrCount { get { return gameTr.Count; } }
+        // 게임 폴더에 저장해 둔 번역 (원문 → 한글). 다음에 열 때 이것부터 씀
+        readonly Dictionary<string, string> savedTr = new Dictionary<string, string>();
+        public const string TrFileName = "미니치트_번역.txt";
+        string TrFile { get { return Path.Combine(Root, TrFileName); } }
+        static string Key(string s) { return Clean(s).Replace("\r", "").Replace("\n", " ").Replace("\t", " ").Trim(); }
+
+        public int LoadSavedTr()
+        {
+            savedTr.Clear();
+            try
+            {
+                if (File.Exists(TrFile))
+                    foreach (var l in File.ReadAllLines(TrFile, Encoding.UTF8))
+                    {
+                        int t = l.IndexOf('\t');
+                        if (t > 0 && !l.StartsWith("#")) savedTr[l.Substring(0, t)] = l.Substring(t + 1);
+                    }
+            }
+            catch { }
+            return savedTr.Count;
+        }
+
+        // 번역이 필요한 글자를 저장된 번역이 다 가지고 있으면 검색·자동 번역을 건너뜀
+        public bool SavedCoversAll()
+        {
+            if (savedTr.Count == 0) return false;
+            return AllRaw().Where(r => !string.IsNullOrEmpty(r) && (Translator.Needs(Clean(r)) || Ph.IsMatch(r))).All(r => savedTr.ContainsKey(Key(r)));
+        }
+
+        // 지금 화면에 쓰는 번역을 게임 폴더에 저장. 못 쓰는 폴더면 false
+        public bool SaveTrToGame()
+        {
+            var lines = new List<string> { "# 미니 치트 번역 파일 — 원문<탭>번역. 번역을 직접 고쳐도 돼요." };
+            var seen = new HashSet<string>();
+            bool was = Ko; Ko = true;
+            foreach (var r in AllRaw())
+            {
+                if (string.IsNullOrEmpty(r)) continue;
+                string k = Key(r);
+                if (k.Length == 0 || !seen.Add(k) || !(Translator.Needs(k) || Ph.IsMatch(r))) continue;
+                string v = T(r);
+                if (v.Length > 0 && v != Clean(r) && !Translator.Needs(v)) lines.Add(k + "\t" + v.Replace("\t", " ").Replace("\n", " "));
+            }
+            Ko = was;
+            if (lines.Count <= 1) return true;
+            try { File.WriteAllLines(TrFile, lines, Encoding.UTF8); LoadSavedTr(); return true; }
+            catch { return false; }
+        }
         public RpgKind Kind;
         public string Currency = "G";
         public readonly Dictionary<int, DbItem> Items = new Dictionary<int, DbItem>(), Weapons = new Dictionary<int, DbItem>(),
@@ -135,6 +183,7 @@ namespace MiniCheat
             }
             else g.SaveDir = root;
             g.BackupName = g.Title; // 번역과 상관없이 백업 폴더 이름은 고정
+            g.LoadSavedTr();
             return g;
         }
 
@@ -275,6 +324,8 @@ namespace MiniCheat
         {
             if (string.IsNullOrEmpty(raw)) return "";
             if (!Ko) return Clean(raw);
+            string sv;
+            if (savedTr.TryGetValue(Key(raw), out sv)) return sv;
             string s = Clean(Resolve(raw));
             return Clean(Translator.Get(s) ?? s);
         }
@@ -292,7 +343,7 @@ namespace MiniCheat
         // 게임 내장 번역을 거친 뒤에도 일본어·중국어로 남는 것 (자동 번역 대상)
         public IEnumerable<string> TextsForAuto()
         {
-            return AllRaw().Where(r => !string.IsNullOrEmpty(r)).Select(r => Clean(Resolve(r))).Where(Translator.Needs).Distinct().ToList();
+            return AllRaw().Where(r => !string.IsNullOrEmpty(r) && !savedTr.ContainsKey(Key(r))).Select(r => Clean(Resolve(r))).Where(Translator.Needs).Distinct().ToList();
         }
 
         public void ApplyLang(bool ko)

@@ -237,6 +237,16 @@ namespace MiniCheat
             string err = null;
             try
             {
+                if (g.SavedCoversAll())
+                {
+                    // 전에 번역해서 게임 폴더에 저장해 둔 게 있으면 그걸로 끝
+                    trDone = g;
+                    g.ApplyLang(chkKo.Checked);
+                    RefreshView();
+                    RefreshGames(g.Root);
+                    lblStatus.Text = "게임 폴더에 저장해 둔 번역(" + GameData.TrFileName + ")을 불러왔어요.";
+                    return;
+                }
                 await System.Threading.Tasks.Task.Run(() => { found = g.FindGameTranslations(); });
                 if (g != db) return;
                 g.ApplyLang(chkKo.Checked);
@@ -258,13 +268,15 @@ namespace MiniCheat
                 if (g != db) return;
                 trDone = g;
                 g.ApplyLang(chkKo.Checked);
+                bool savedToGame = g.SaveTrToGame();
                 RefreshView();
                 RefreshGames(g.Root);
                 var parts = new List<string>();
                 if (found > 0) parts.Add("게임에 들어 있는 한국어 번역 " + found + "개를 썼어요");
                 if (err != null) parts.Add("자동 번역은 실패했어요 (인터넷 연결 확인)");
                 else if (auto > 0) parts.Add((found > 0 ? "나머지 " : "") + auto + "개는 자동 번역했어요");
-                if (parts.Count > 0) lblStatus.Text = string.Join(", ", parts) + ".";
+                if (parts.Count > 0)
+                    lblStatus.Text = string.Join(", ", parts) + (savedToGame ? ". 게임 폴더에 번역 파일로 저장해 둬서 다음엔 바로 나와요." : ". (게임 폴더에 쓸 수 없어서 내 문서 사전에만 저장했어요)");
             }
             finally { translating = false; }
         }
