@@ -79,7 +79,7 @@ namespace MiniCheat
             Font = new Font("맑은 고딕", 9F);
 
             // ── 위: 게임 고르기 ──
-            var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(4, 6, 4, 0), WrapContents = false };
+            var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(4, 6, 4, 0), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
             cmbGame = new ComboBox { Width = 380, DropDownStyle = ComboBoxStyle.DropDownList };
             var btnAdd = new Button { Text = "게임 폴더 추가...", Width = 120, Height = 26 };
             var btnBackups = new Button { Text = "백업 목록 · 복원", Width = 120, Height = 26 };
@@ -205,10 +205,7 @@ namespace MiniCheat
             {
                 db = GameData.Load(dir);
                 iconCache.Clear();
-                // 24px 아이콘 게임은 정확히 2배(48), 32px 게임은 그대로(40칸 안에 32)
-                var cell = db.IsJs ? new Size(40, 40) : new Size(48, 48);
-                if (ilBag.ImageSize != cell) ilBag.ImageSize = cell;
-                ilBag.Images.Clear();
+                SetBagCell();
                 Backup.RememberGame(dir);
                 RefreshGames(dir);
                 cur = null; root = null;
@@ -292,6 +289,24 @@ namespace MiniCheat
             if (actorId >= 0)
                 foreach (ListViewItem li in lvActors.Items)
                     if ((int)Json.Num((JObj)li.Tag, "_actorId") == actorId) { li.Selected = true; break; }
+        }
+
+        // 아이콘은 정수배로만: 32px 게임 40칸(게임기 모드 64), 24px 게임 48칸(게임기 모드 72)
+        void SetBagCell()
+        {
+            bool big = db != null && db.IsJs;
+            var cell = Touch.On ? (big ? new Size(64, 64) : new Size(72, 72)) : (big ? new Size(40, 40) : new Size(48, 48));
+            if (ilBag.ImageSize != cell) ilBag.ImageSize = cell;
+            ilBag.Images.Clear();
+        }
+
+        public void TouchChanged()
+        {
+            SetBagCell();
+            loading = true;
+            FillBag();
+            if (actor != null) ShowActor(actor);
+            loading = false;
         }
 
         void ReloadSlots()
@@ -699,8 +714,11 @@ namespace MiniCheat
                 };
                 equipPanel.Controls.Add(label);
                 equipPanel.Controls.Add(cb);
+                Touch.Fit(label); Touch.Fit(cb);
             }
-            equipPanel.Height = Math.Max(40, slots.Count * 32 + 4);
+            int bottom = 40;
+            foreach (Control c in equipPanel.Controls) bottom = Math.Max(bottom, c.Bottom + 4);
+            equipPanel.Height = bottom;
         }
 
         ComboBox MakeIconCombo(int x, int y, int w)
@@ -768,7 +786,7 @@ namespace MiniCheat
         TabPage BuildBag()
         {
             var page = new TabPage("가방 · 돈");
-            var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 72, Padding = new Padding(4, 6, 4, 0) };
+            var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 72, Padding = new Padding(4, 6, 4, 4), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
             numGold = new NumericUpDown { Width = 130, Maximum = 99999999, ThousandsSeparator = true };
             var btnGoldMax = new Button { Text = "최대로", Width = 70, Height = 25 };
             top.Controls.AddRange(new Control[] { new Label { Text = "돈", AutoSize = true, Margin = new Padding(3, 6, 3, 0), Font = new Font(Font, FontStyle.Bold) }, numGold, btnGoldMax });
@@ -788,7 +806,7 @@ namespace MiniCheat
             ilBag = new ImageList { ImageSize = new Size(40, 40), ColorDepth = ColorDepth.Depth32Bit };
             lvBag = new DBListView { Dock = DockStyle.Fill, View = View.LargeIcon, LargeImageList = ilBag, HideSelection = false };
 
-            var right = new Panel { Dock = DockStyle.Right, Width = 230, Padding = new Padding(8) };
+            var right = new Panel { Dock = DockStyle.Right, Width = 230, Padding = new Padding(8), AutoScroll = true };
             picItem = new PictureBox { Left = 10, Top = 6, Width = 64, Height = 64, SizeMode = PictureBoxSizeMode.CenterImage };
             lblItemName = new Label { Left = 82, Top = 10, Width = 140, Height = 40, Font = new Font(Font.FontFamily, 10F, FontStyle.Bold), AutoEllipsis = true };
             lblItemDesc = new Label { Left = 10, Top = 76, Width = 212, Height = 66, ForeColor = Color.DimGray, AutoEllipsis = true };
@@ -902,7 +920,7 @@ namespace MiniCheat
         TabPage BuildFlags()
         {
             var page = new TabPage("스위치 · 변수");
-            var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 36, Padding = new Padding(4, 6, 4, 0) };
+            var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 36, Padding = new Padding(4, 6, 4, 4), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
             txtFlagFind = new TextBox { Width = 180 };
             chkNamed = new CheckBox { Text = "이름 붙은 것만", AutoSize = true, Checked = true, Margin = new Padding(12, 4, 3, 0) };
             top.Controls.AddRange(new Control[] { new Label { Text = "이름·번호 찾기", AutoSize = true, Margin = new Padding(3, 5, 3, 0) }, txtFlagFind, chkNamed,
@@ -996,6 +1014,7 @@ namespace MiniCheat
                     if (Json.At(data, i) is JObj || Json.At(data, i) is JArr) { r.Cells[2].Value = "(목록 데이터)"; r.Cells[2].ReadOnly = true; }
                 }
                 r.Tag = i;
+                r.Height = g.RowTemplate.Height;
                 rows.Add(r);
             }
             g.Rows.AddRange(rows.ToArray());
@@ -1027,7 +1046,7 @@ namespace MiniCheat
             numSteps.ValueChanged += (s, e) => { if (!loading && root != null) { Json.SetNum(Party, "_steps", (double)numSteps.Value); Changed(); } };
             numSaves.ValueChanged += (s, e) => { if (!loading && root != null) { Json.SetNum(Json.Get(root, "system"), "_saveCount", (double)numSaves.Value); Changed(); } };
 
-            var edit = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 36, Padding = new Padding(4, 4, 4, 0) };
+            var edit = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 36, Padding = new Padding(4, 4, 4, 4), AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink };
             txtNode = new TextBox { Width = 300 };
             var btnApply = new Button { Text = "이 값으로 바꾸기", Width = 120, Height = 25 };
             edit.Controls.AddRange(new Control[] { new Label { Text = "고른 값", AutoSize = true, Margin = new Padding(3, 6, 3, 0) }, txtNode, btnApply,
@@ -1188,6 +1207,7 @@ namespace MiniCheat
                 lv.DoubleClick += (s, e) => f.DialogResult = DialogResult.OK;
                 fill();
                 f.ResumeLayout(false);
+                Touch.Fit(f);
                 if (f.ShowDialog(owner) != DialogResult.OK) return new List<DbItem>();
                 return lv.SelectedItems.Cast<ListViewItem>().Select(i => (DbItem)i.Tag).ToList();
             }
@@ -1246,6 +1266,7 @@ namespace MiniCheat
             bOpen.Click += (s, e) => { var d = Backup.Dir(db.BackupName); Directory.CreateDirectory(d); Process.Start("explorer.exe", "\"" + d + "\""); };
             Fill();
             ResumeLayout(false);
+            Touch.Fit(this);
         }
 
         void Fill()

@@ -46,6 +46,7 @@ namespace MiniCheat
         ProgressBar bar;
         ListView lvRes, lvSaved;
         SaveEditor saveEd;
+        Button btnGame;
         TabControl mainTabs;
         readonly Timer tRefresh = new Timer { Interval = 500 };
         readonly Timer tFreeze = new Timer { Interval = 100 };
@@ -67,7 +68,9 @@ namespace MiniCheat
             lblProc = new Label { Text = "선택된 프로그램 없음", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0) };
             var btnProc = new Button { Text = "프로세스 선택", Dock = DockStyle.Left, Width = 110 };
             var btnUpd = new Button { Text = "업데이트 확인", Dock = DockStyle.Right, Width = 100 };
-            top.Controls.Add(lblProc); top.Controls.Add(btnProc); top.Controls.Add(btnUpd);
+            btnGame = new Button { Text = "게임기 모드", Dock = DockStyle.Right, Width = 100 };
+            top.Controls.Add(lblProc); top.Controls.Add(btnProc); top.Controls.Add(btnGame); top.Controls.Add(new Panel { Dock = DockStyle.Right, Width = 6 }); top.Controls.Add(btnUpd);
+            btnGame.Click += (s, e) => SetGameMode(!Touch.On);
             btnProc.Click += (s, e) => PickProcess();
             btnUpd.Click += (s, e) => CheckUpdate(true);
 
@@ -173,11 +176,28 @@ namespace MiniCheat
             UpdateButtons();
             ResumeLayout(false);
             PerformLayout();
+            Touch.Hook(this);
+            Touch.HookNumberBox(txtVal);
+        }
+
+        // 게임기 모드: 화면 가득, 글자·버튼 1.5배, 숫자는 큰 숫자판
+        void SetGameMode(bool on)
+        {
+            if (on == Touch.On) return;
+            Touch.On = on;
+            Touch.Scale(this, on ? Touch.F : 1 / Touch.F);
+            WindowState = on ? FormWindowState.Maximized : FormWindowState.Normal;
+            btnGame.BackColor = on ? Color.FromArgb(60, 130, 220) : SystemColors.Control;
+            btnGame.ForeColor = on ? Color.White : SystemColors.ControlText;
+            btnGame.UseVisualStyleBackColor = !on;
+            saveEd.TouchChanged();
+            Touch.SaveSetting(on);
         }
 
         protected override void OnShown(EventArgs e)
         {
             base.OnShown(e);
+            if (Touch.LoadSetting()) SetGameMode(true);
             CheckUpdate(false);
         }
 
@@ -431,7 +451,7 @@ namespace MiniCheat
             if (i < 0 || i >= saved.Count || h == IntPtr.Zero) return;
             var sv = saved[i];
             string cur = Val.Format(Scanner.ReadValue(h, sv.Addr, sv.Kind), sv.Kind);
-            string r = Prompt.Show(this, "값 바꾸기", sv.Desc + "  —  새 값:", cur);
+            string r = Prompt.Number(this, "값 바꾸기", sv.Desc + "  —  새 값:", cur);
             if (r == null) return;
             double v;
             if (!ParseNum(r, out v)) { MessageBox.Show(this, "숫자로 넣어 주세요.", "미니 치트"); return; }
@@ -453,7 +473,7 @@ namespace MiniCheat
         {
             var s = sc;
             if (s == null || busy || s.SnapMode || lvRes.SelectedIndices.Count == 0) return;
-            string r = Prompt.Show(this, "값 한꺼번에 바꾸기", "선택한 " + lvRes.SelectedIndices.Count + "개 결과에 넣을 값:", txtVal.Text);
+            string r = Prompt.Number(this, "값 한꺼번에 바꾸기", "선택한 " + lvRes.SelectedIndices.Count + "개 결과에 넣을 값:", txtVal.Text);
             if (r == null) return;
             double v;
             if (!ParseNum(r, out v)) { MessageBox.Show(this, "숫자로 넣어 주세요.", "미니 치트"); return; }

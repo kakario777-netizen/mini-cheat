@@ -35,8 +35,19 @@ namespace MiniCheat
                 f.AcceptButton = ok; f.CancelButton = no;
                 f.Shown += (s, e) => { txt.Focus(); txt.SelectAll(); };
                 f.ResumeLayout(false);
+                Touch.Fit(f);
                 return f.ShowDialog(owner) == DialogResult.OK ? txt.Text : null;
             }
+        }
+
+        // 숫자 입력: 게임기 모드면 큰 숫자판
+        public static string Number(IWin32Window owner, string title, string label, string def)
+        {
+            if (!Touch.On) return Show(owner, title, label, def);
+            double cur;
+            double.TryParse((def ?? "").Replace(",", ""), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out cur);
+            var v = NumPad.Ask(owner, cur, true, true);
+            return v.HasValue ? JVal.Fmt((double)v.Value) : null;
         }
     }
 
@@ -88,6 +99,7 @@ namespace MiniCheat
 
             LoadList();
             ResumeLayout(false);
+            Touch.Fit(this);
         }
 
         void LoadList()
