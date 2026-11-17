@@ -58,6 +58,7 @@ namespace MiniCheat
             ClientSize = new Size(840, 640);
             MinimumSize = new Size(700, 500);
             StartPosition = FormStartPosition.CenterScreen;
+            try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
             // ── 위: 프로세스 선택 ──
             var top = new Panel { Dock = DockStyle.Top, Height = 40, Padding = new Padding(8, 7, 8, 7) };
