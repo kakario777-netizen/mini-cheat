@@ -23,6 +23,7 @@ namespace MiniCheat
         JObj root;
         SaveFmt fmt;
         RubySave rsave;
+        LsdSave lsd;
         DateTime loadedTime;
         bool loading, settingGame;
         public bool Dirty { get; private set; }
@@ -325,8 +326,10 @@ namespace MiniCheat
         {
             try
             {
+                rsave = null; lsd = null;
                 if (db.IsRuby) { rsave = RubySave.Load(s.Path, db.Kind); root = rsave.Root; }
-                else { rsave = null; root = Json.Parse(SaveCodec.Read(s.Path, out fmt)) as JObj; }
+                else if (db.Kind == RpgKind.R2000) { lsd = LsdSave.Load(s.Path, db); root = lsd.Root; }
+                else root = Json.Parse(SaveCodec.Read(s.Path, out fmt)) as JObj;
                 if (root == null) throw new Exception("세이브 모양이 예상과 달라요");
                 cur = s;
                 loadedTime = File.GetLastWriteTimeUtc(s.Path);
@@ -353,6 +356,7 @@ namespace MiniCheat
                         return false;
                 Backup.Make(db.BackupName, cur.Path, null);
                 if (rsave != null) rsave.Save(cur.Path);
+                else if (lsd != null) lsd.Save(cur.Path);
                 else SaveCodec.Write(cur.Path, Json.Write(root), fmt);
                 loadedTime = File.GetLastWriteTimeUtc(cur.Path);
                 Dirty = false;
@@ -628,9 +632,9 @@ namespace MiniCheat
         {
             var list = new List<EquipSlot>();
             if (actor == null) return list;
-            if (db.Kind == RpgKind.VX || db.Kind == RpgKind.XP)
+            if (db.Kind == RpgKind.VX || db.Kind == RpgKind.XP || db.Kind == RpgKind.R2000)
             {
-                // VX·XP: 무기 번호, 방어구1~4 번호가 따로 저장됨
+                // VX·XP·2000: 무기 번호, 방어구1~4 번호가 따로 저장됨
                 string[] keys = { "_weaponId", "_armor1Id", "_armor2Id", "_armor3Id", "_armor4Id" };
                 for (int i = 0; i < keys.Length; i++)
                 {
@@ -826,7 +830,7 @@ namespace MiniCheat
 
         JObj Bag(DbItem it)
         {
-            string k = it.Kind == 1 ? "_weapons" : it.Kind == 2 ? "_armors" : "_items";
+            string k = db.Kind == RpgKind.R2000 ? "_items" : it.Kind == 1 ? "_weapons" : it.Kind == 2 ? "_armors" : "_items"; // 2000 은 한 목록
             var o = Json.Obj(Party, k);
             if (o == null && Party != null) { o = new JObj(); Party[k] = o; }
             return o;
@@ -854,12 +858,15 @@ namespace MiniCheat
             int kind = cat == 1 ? 1 : cat == 2 ? 2 : 0;
             var list = src.Values.Where(x => cat == 3 ? x.IType == 2 : cat == 0 ? x.IType != 2 : true).ToList();
             // 데이터베이스에 없는데 세이브에 있는 것
-            var cont = Json.Obj(Party, kind == 1 ? "_weapons" : kind == 2 ? "_armors" : "_items");
-            if (cont != null && cat != 3)
+            bool one = db.Kind == RpgKind.R2000;
+            var cont = Json.Obj(Party, one ? "_items" : kind == 1 ? "_weapons" : kind == 2 ? "_armors" : "_items");
+            if (cont != null && cat != 3 && (!one || cat == 0))
                 foreach (var k in cont.Keys)
                 {
                     int id;
-                    if (int.TryParse(k, out id) && !src.ContainsKey(id)) list.Add(new DbItem { Id = id, Name = "알 수 없는 것 #" + id, Kind = kind });
+                    if (!int.TryParse(k, out id) || src.ContainsKey(id)) continue;
+                    if (one && (db.Weapons.ContainsKey(id) || db.Armors.ContainsKey(id))) continue;
+                    list.Add(new DbItem { Id = id, Name = "알 수 없는 것 #" + id, Kind = kind });
                 }
             string f = txtBagFind.Text.Trim();
             lvBag.BeginUpdate();

@@ -101,17 +101,19 @@ namespace MiniCheat
 
         public bool IsJs { get { return Kind == RpgKind.MV || Kind == RpgKind.MZ; } }
         public bool IsRuby { get { return Kind == RpgKind.XP || Kind == RpgKind.VX || Kind == RpgKind.VXAce; } }
-        public bool CanEdit { get { return IsJs || IsRuby; } }
+        public bool CanEdit { get { return IsJs || IsRuby || Kind == RpgKind.R2000; } }
+        public Encoding Enc;     // 2000/2003 글자 인코딩 (일본어 932 / 한국어 949 ...)
+        public bool Is2k3;
         RgssArchive arc;
         string rext;
         readonly List<string> xpIcons = new List<string>();
-        public int ParamCount { get { return Kind == RpgKind.XP || Kind == RpgKind.VX ? 6 : 8; } }
+        public int ParamCount { get { return Kind == RpgKind.XP || Kind == RpgKind.VX || Kind == RpgKind.R2000 ? 6 : 8; } }
         // VX/XP 는 능력치 추가값이 배열이 아니라 따로따로 저장됨
         public string[] PlusKeys
         {
             get
             {
-                if (Kind == RpgKind.VX) return new[] { "_maxhpPlus", "_maxmpPlus", "_atkPlus", "_defPlus", "_spiPlus", "_agiPlus" };
+                if (Kind == RpgKind.VX || Kind == RpgKind.R2000) return new[] { "_maxhpPlus", "_maxmpPlus", "_atkPlus", "_defPlus", "_spiPlus", "_agiPlus" };
                 if (Kind == RpgKind.XP) return new[] { "_maxhpPlus", "_maxspPlus", "_strPlus", "_dexPlus", "_agiPlus", "_intPlus" };
                 return null;
             }
@@ -181,6 +183,12 @@ namespace MiniCheat
                     }
                     catch { }
             }
+            else if (g.Kind == RpgKind.R2000)
+            {
+                g.SaveDir = root;
+                g.ImgDir = root;
+                try { g.LoadLdb(); } catch { }
+            }
             else g.SaveDir = root;
             g.BackupName = g.Title; // 번역과 상관없이 백업 폴더 이름은 고정
             g.LoadSavedTr();
@@ -207,6 +215,8 @@ namespace MiniCheat
             if (File.Exists(p)) return File.ReadAllBytes(p);
             return arc == null ? null : arc.Get(rel);
         }
+
+        static bool Real(string name) { return name.Any(char.IsLetterOrDigit); }
 
         public static string Clean(string s)
         {
@@ -242,7 +252,7 @@ namespace MiniCheat
                     it.Icon = icn.Length > 0 ? ix + 1 : 0;
                 }
                 it.Name = Clean(it.RawName); it.Desc = Clean(it.RawDesc);
-                if (it.Name.Length == 0) continue; // 빈 칸(이름 없는 데이터)은 뺌
+                if (!Real(it.Name)) continue; // 빈 칸·구분선(-----) 은 뺌
                 dst[it.Id] = it;
             }
         }
@@ -290,6 +300,154 @@ namespace MiniCheat
                 key = new byte[16];
                 for (int i = 0; i < 16; i++) key[i] = Convert.ToByte(k.Substring(i * 2, 2), 16);
             }
+        }
+
+        // ---------- 2000/2003 데이터베이스 (RPG_RT.ldb) ----------
+        string IniValue(string key)
+        {
+            try
+            {
+                string ini = Path.Combine(Root, "RPG_RT.ini");
+                if (!File.Exists(ini)) return null;
+                var b = File.ReadAllBytes(ini);
+                var txt = (Enc ?? Encoding.Default).GetString(b);
+                foreach (var l in txt.Split('\n'))
+                {
+                    var t = l.Trim();
+                    if (t.StartsWith(key + "=", StringComparison.OrdinalIgnoreCase)) return t.Substring(key.Length + 1).Trim();
+                }
+            }
+            catch { }
+            return null;
+        }
+
+        void LoadLdb()
+        {
+            string path = Path.Combine(Root, "RPG_RT.ldb");
+            if (!File.Exists(path)) return;
+            var b = File.ReadAllBytes(path);
+            int pos = Lcf.SkipHeader(b, "LcfDataBase");
+            var top = Lcf.Struct(b, ref pos, b.Length);
+            var aActors = Lcf.Array(top.Get(0x0B)); var aSkills = Lcf.Array(top.Get(0x0C)); var aItems = Lcf.Array(top.Get(0x0D));
+            var aSw = Lcf.Array(top.Get(0x17)); var aVar = Lcf.Array(top.Get(0x18)); var aCls = Lcf.Array(top.Get(0x1E));
+
+            var samples = new List<byte[]>();
+            foreach (var l in new[] { aActors, aSkills, aItems, aSw, aVar, aCls })
+                foreach (var kv in l) { samples.Add(kv.Value.Get(1)); samples.Add(kv.Value.Get(2)); }
+            Enc = Lcf.DetectEncoding(samples, IniValue("Encoding"));
+            Func<byte[], string> S = d => d == null ? "" : Enc.GetString(d);
+
+            int maxParam = aActors.Select(kv => (kv.Value.Get(0x1F) ?? new byte[0]).Length / 12).DefaultIfEmpty(0).Max();
+            Is2k3 = aCls.Count > 0 || maxParam > 50;
+
+            foreach (var kv in aItems)
+            {
+                var st = kv.Value;
+                int type = Lcf.Int(st.Get(3), 0);
+                var it = new DbItem { Id = kv.Key, RawName = S(st.Get(1)), RawDesc = S(st.Get(2)), Icon = type + 1, IType = 1 };
+                it.Name = Clean(it.RawName); it.Desc = Clean(it.RawDesc);
+                if (!Real(it.Name)) continue;
+                // 종류: 1 무기, 2 방패, 3 갑옷, 4 투구, 5 장신구, 나머지는 아이템
+                if (type == 1) { it.Kind = 1; it.EType = 1; Weapons[it.Id] = it; }
+                else if (type >= 2 && type <= 5) { it.Kind = 2; it.EType = type == 2 ? 2 : type == 3 ? 4 : type == 4 ? 3 : 5; Armors[it.Id] = it; }
+                else { it.Kind = 0; Items[it.Id] = it; }
+            }
+            foreach (var kv in aSkills)
+            {
+                var it = new DbItem { Id = kv.Key, RawName = S(kv.Value.Get(1)), RawDesc = S(kv.Value.Get(2)), Icon = 21, Kind = 3 };
+                it.Name = Clean(it.RawName); it.Desc = Clean(it.RawDesc);
+                if (Real(it.Name)) Skills[it.Id] = it;
+            }
+            Func<LcfStruct, JObj> person = st =>
+            {
+                var o = new JObj();
+                o["name"] = JVal.S(S(st.Get(0x01)));
+                o["faceName"] = JVal.S(S(st.Get(0x0F)));
+                o["faceIndex"] = JVal.N(Lcf.Int(st.Get(0x10), 0));
+                o["initialLevel"] = JVal.N(Lcf.Int(st.Get(0x07), 1));
+                o["finalLevel"] = JVal.N(Lcf.Int(st.Get(0x08), Is2k3 ? 99 : 50));
+                o["expBase"] = JVal.N(Lcf.Int(st.Get(0x29), Is2k3 ? 300 : 30));
+                o["expInflation"] = JVal.N(Lcf.Int(st.Get(0x2A), Is2k3 ? 300 : 30));
+                o["expCorrection"] = JVal.N(Lcf.Int(st.Get(0x2B), 0));
+                o["classId"] = JVal.N(Lcf.Int(st.Get(0x39), 0));
+                var pv = Lcf.I16(st.Get(0x1F));
+                int n = pv.Length / 6;
+                var table = new JArr();
+                for (int k = 0; k < 6; k++)
+                {
+                    var row = new JArr();
+                    row.Items.Add(JVal.N(0)); // [레벨] 로 바로 찾게 0번 칸은 비움
+                    for (int i = 0; i < n; i++) row.Items.Add(JVal.N(pv[k * n + i]));
+                    table.Items.Add(row);
+                }
+                o["parameters"] = table;
+                return o;
+            };
+            foreach (var kv in aActors) Actors[kv.Key] = person(kv.Value);
+            foreach (var kv in aCls) Classes[kv.Key] = person(kv.Value);
+
+            Func<List<KeyValuePair<int, LcfStruct>>, string[]> names = l =>
+            {
+                var r = new string[l.Count == 0 ? 0 : l.Max(x => x.Key) + 1];
+                for (int i = 0; i < r.Length; i++) r[i] = "";
+                foreach (var kv in l) r[kv.Key] = S(kv.Value.Get(1));
+                return r;
+            };
+            swRaw = names(aSw);
+            varRaw = names(aVar);
+            string t = IniValue("GameTitle");
+            if (!string.IsNullOrEmpty(t)) { TitleRaw = t; Title = Clean(t); }
+            ApplyLang(false);
+        }
+
+        // EasyRPG 다국어 폴더 (Language\한국어\*.po)
+        void ReadLanguagePo()
+        {
+            string lang = Path.Combine(Root, "Language");
+            if (!Directory.Exists(lang)) return;
+            foreach (var d in Directory.GetDirectories(lang))
+            {
+                string n = Path.GetFileName(d).ToLowerInvariant(), code = "";
+                try
+                {
+                    string meta = Path.Combine(d, "meta.ini");
+                    if (File.Exists(meta))
+                        foreach (var l in File.ReadAllLines(meta, Encoding.UTF8))
+                            if (l.StartsWith("Code=", StringComparison.OrdinalIgnoreCase)) code = l.Substring(5).ToLowerInvariant();
+                }
+                catch { }
+                bool ko = n.StartsWith("ko") || n.StartsWith("kr") || n.Contains("korean") || n.Contains("한국") || n.Contains("한글") || code.StartsWith("ko");
+                if (!ko) continue;
+                foreach (var f in Directory.GetFiles(d, "*.po")) try { ReadPo(f); } catch { }
+            }
+        }
+
+        void ReadPo(string f)
+        {
+            string id = null, cur = null;
+            var sbId = new StringBuilder(); var sbStr = new StringBuilder();
+            Action flush = () =>
+            {
+                if (id != null && sbStr.Length > 0 && sbId.Length > 0) AddTr(sbId.ToString(), sbStr.ToString());
+                sbId.Clear(); sbStr.Clear(); id = null;
+            };
+            Func<string, string> unq = q =>
+            {
+                q = q.Trim();
+                if (q.Length < 2) return "";
+                q = q.Substring(1, q.Length - 2);
+                return q.Replace("\\n", "\n").Replace("\\\"", "\"").Replace("\\\\", "\\");
+            };
+            foreach (var raw in File.ReadAllLines(f, Encoding.UTF8))
+            {
+                var l = raw.Trim();
+                if (l.StartsWith("msgctxt")) { flush(); continue; }
+                if (l.StartsWith("msgid ")) { if (id != null) flush(); id = ""; cur = "id"; sbId.Append(unq(l.Substring(6))); continue; }
+                if (l.StartsWith("msgstr ")) { cur = "str"; sbStr.Append(unq(l.Substring(7))); continue; }
+                if (l.StartsWith("\"")) { if (cur == "id") sbId.Append(unq(l)); else if (cur == "str") sbStr.Append(unq(l)); continue; }
+                if (l.Length == 0) { flush(); cur = null; }
+            }
+            flush();
         }
 
         static string[] RawNames(JArr a)
@@ -354,7 +512,7 @@ namespace MiniCheat
             SwitchNames = swRaw.Select(T).ToArray();
             VarNames = varRaw.Select(T).ToArray();
             if (equipRaw.Length > 1) EquipTypes = equipRaw.Select(T).ToArray();
-            string[] defP = Kind == RpgKind.VX ? new[] { "최대 HP", "최대 MP", "공격력", "방어력", "정신력", "민첩성", "", "" }
+            string[] defP = Kind == RpgKind.VX || Kind == RpgKind.R2000 ? new[] { "최대 HP", "최대 MP", "공격력", "방어력", "정신력", "민첩성", "", "" }
                 : Kind == RpgKind.XP ? new[] { "최대 HP", "최대 SP", "힘", "기교", "민첩", "마력", "", "" }
                 : new[] { "최대 HP", "최대 MP", "공격력", "방어력", "마법력", "마법 방어", "민첩성", "운" };
             for (int i = 0; i < 8; i++) ParamNames[i] = i < paramRaw.Length && paramRaw[i].Length > 0 ? T(paramRaw[i]) : defP[i];
@@ -365,6 +523,7 @@ namespace MiniCheat
         public int FindGameTranslations()
         {
             gameTr.Clear(); locale.Clear();
+            if (Kind == RpgKind.R2000) { ReadLanguagePo(); return gameTr.Count; }
             if (!IsJs) return 0;
             var files = new List<string>();
             try { Walk(Root, 0, files); } catch { }
@@ -568,6 +727,7 @@ namespace MiniCheat
 
         public Image Icon(int index, int size)
         {
+            if (Kind == RpgKind.R2000) return Lcf.TypeIcon(index - 1, size);
             var bmp = new Bitmap(size, size);
             if (index <= 0) return bmp;
             Bitmap src = iconSet;
@@ -606,9 +766,10 @@ namespace MiniCheat
             var bmp = new Bitmap(size, size);
             if (string.IsNullOrEmpty(name)) return bmp;
             Bitmap sheet;
-            if (!faceSheets.TryGetValue(name, out sheet)) { sheet = LoadImage(Path.Combine(IsJs ? "faces" : "Faces", name)); faceSheets[name] = sheet; }
+            if (!faceSheets.TryGetValue(name, out sheet)) { sheet = Kind == RpgKind.R2000 ? Lcf.LoadImage(Path.Combine(Path.Combine(Root, "FaceSet"), name))
+                    : LoadImage(Path.Combine(IsJs ? "faces" : "Faces", name)); faceSheets[name] = sheet; }
             if (sheet == null) return bmp;
-            int fw = sheet.Width / 4, fh = sheet.Height / 2;
+            int fw = sheet.Width / 4, fh = sheet.Height / (Kind == RpgKind.R2000 ? 4 : 2); // 2000/2003 은 4×4 칸
             using (var g = Graphics.FromImage(bmp))
             {
                 g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
@@ -662,6 +823,28 @@ namespace MiniCheat
         public double ExpFor(int actorId, int classId, int level)
         {
             JObj a;
+            if (Kind == RpgKind.R2000)
+            {
+                // EasyRPG 와 같은 공식. 레벨 L 에 필요한 경험치 = 계산(L-1)
+                JObj src;
+                if (!(classId > 0 && Classes.TryGetValue(classId, out src)) && !Actors.TryGetValue(actorId, out src)) return 0;
+                double bs = Json.Num(src, "expBase"), inf = Json.Num(src, "expInflation"), cor = Json.Num(src, "expCorrection");
+                int lvl = level - 1;
+                long result = 0;
+                if (!Is2k3)
+                {
+                    inf = 1.5 + inf * 0.01;
+                    for (int i = lvl; i >= 1; i--)
+                    {
+                        result += (int)(cor + bs);
+                        bs = bs * inf;
+                        inf = ((lvl + 1) * 0.002 + 0.8) * (inf - 1) + 1;
+                    }
+                    return Math.Min(result, 999999);
+                }
+                for (int i = 1; i <= lvl; i++) result += (int)bs + i * (int)inf + (int)cor;
+                return Math.Min(result, 9999999);
+            }
             if (Kind == RpgKind.VX || Kind == RpgKind.XP)
             {
                 if (!Actors.TryGetValue(actorId, out a) || level <= 1) return 0;
@@ -691,7 +874,12 @@ namespace MiniCheat
         {
             JObj c;
             JArr table;
-            if (Kind == RpgKind.VX || Kind == RpgKind.XP)
+            if (Kind == RpgKind.R2000)
+            {
+                if (!(classId > 0 && Classes.TryGetValue(classId, out c)) && !Actors.TryGetValue(actorId, out c)) return 0;
+                table = Json.Arr(c, "parameters");
+            }
+            else if (Kind == RpgKind.VX || Kind == RpgKind.XP)
             {
                 if (!Actors.TryGetValue(actorId, out c)) return 0;
                 table = Json.Arr(c, "parameters");
@@ -715,7 +903,7 @@ namespace MiniCheat
         {
             JObj a;
             if (!Actors.TryGetValue(actorId, out a)) return 99;
-            return (int)Json.Num(a, Kind == RpgKind.XP ? "finalLevel" : "maxLevel", 99);
+            return (int)Json.Num(a, Kind == RpgKind.XP || Kind == RpgKind.R2000 ? "finalLevel" : "maxLevel", 99);
         }
     }
 
