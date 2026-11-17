@@ -13,7 +13,7 @@ namespace MiniCheat
     class DbItem
     {
         public int Id;
-        public string Name = "", Desc = "";
+        public string Name = "", Desc = "", RawName = "", RawDesc = "";
         public int Icon;
         public int IType = 1;  // 아이템: 1 보통, 2 중요
         public int EType;      // 방어구 장비 종류 (무기는 1)
@@ -30,7 +30,13 @@ namespace MiniCheat
     // 게임 폴더에서 이름·아이콘·얼굴 그림 등 데이터베이스를 읽음
     class GameData
     {
-        public string Root, DataDir, ImgDir, SaveDir, Title;
+        public string Root, DataDir, ImgDir, SaveDir, Title, BackupName, TitleRaw;
+        public bool Ko;
+        public string[] swRaw = new string[0], varRaw = new string[0];
+        string[] paramRaw = new string[0], equipRaw = new string[0];
+        readonly Dictionary<string, string> gameTr = new Dictionary<string, string>();   // 게임에 들어 있는 번역 (원문 → 한글)
+        readonly Dictionary<string, string> locale = new Dictionary<string, string>();   // 번역 키 → 한글
+        public int GameTrCount { get { return gameTr.Count; } }
         public RpgKind Kind;
         public string Currency = "G";
         public readonly Dictionary<int, DbItem> Items = new Dictionary<int, DbItem>(), Weapons = new Dictionary<int, DbItem>(),
@@ -81,6 +87,7 @@ namespace MiniCheat
         public static GameData Load(string root)
         {
             var g = new GameData { Root = root, Title = System.IO.Path.GetFileName(root.TrimEnd('\\', '/')) };
+            g.TitleRaw = g.Title;
             g.Kind = DetectKind(root);
             if (g.IsJs)
             {
@@ -93,6 +100,7 @@ namespace MiniCheat
                 try { g.LoadDb(); } catch { }
             }
             else g.SaveDir = root;
+            g.BackupName = g.Title; // 번역과 상관없이 백업 폴더 이름은 고정
             return g;
         }
 
@@ -103,7 +111,7 @@ namespace MiniCheat
             return Json.Parse(File.ReadAllText(p, Encoding.UTF8));
         }
 
-        static string Clean(string s)
+        public static string Clean(string s)
         {
             // \C[2] 같은 색 코드 제거
             return Regex.Replace(s ?? "", @"\\[A-Za-z]+\[[^\]]*\]|\\[{}.|!><^]", "").Trim();
@@ -120,13 +128,14 @@ namespace MiniCheat
                 var it = new DbItem
                 {
                     Id = (int)Json.Num(o, "id"),
-                    Name = Clean(Json.Str(o, "name")),
-                    Desc = Clean(Json.Str(o, "description")),
+                    RawName = Json.Str(o, "name"),
+                    RawDesc = Json.Str(o, "description"),
                     Icon = (int)Json.Num(o, "iconIndex"),
                     IType = (int)Json.Num(o, "itypeId", 1),
                     EType = kind == 1 ? 1 : (int)Json.Num(o, "etypeId"),
                     Kind = kind
                 };
+                it.Name = Clean(it.RawName); it.Desc = Clean(it.RawDesc);
                 if (it.Name.Length == 0) continue; // 빈 칸(이름 없는 데이터)은 뺌
                 dst[it.Id] = it;
             }
@@ -147,15 +156,14 @@ namespace MiniCheat
             var sys = ReadData("System.json") as JObj;
             if (sys == null) return;
             string t = Json.Str(sys, "gameTitle");
-            if (t.Length > 0) Title = t;
+            if (t.Length > 0) { Title = Clean(t); TitleRaw = t; }
             string cu = Json.Str(sys, "currencyUnit");
             if (cu.Length > 0) Currency = cu;
-            SwitchNames = Names(Json.Arr(sys, "switches"));
-            VarNames = Names(Json.Arr(sys, "variables"));
-            var et = Names(Json.Arr(sys, "equipTypes"));
-            if (et.Length > 1) EquipTypes = et;
-            var pn = Names(Json.Arr(Json.Get(sys, "terms"), "params"));
-            for (int i = 0; i < 8 && i < pn.Length; i++) if (pn[i].Length > 0) ParamNames[i] = pn[i];
+            swRaw = RawNames(Json.Arr(sys, "switches"));
+            varRaw = RawNames(Json.Arr(sys, "variables"));
+            equipRaw = RawNames(Json.Arr(sys, "equipTypes"));
+            paramRaw = RawNames(Json.Arr(Json.Get(sys, "terms"), "params"));
+            ApplyLang(false);
             string k = Json.Str(sys, "encryptionKey");
             if (k.Length == 32)
             {
@@ -164,10 +172,230 @@ namespace MiniCheat
             }
         }
 
-        static string[] Names(JArr a)
+        static string[] RawNames(JArr a)
         {
             if (a == null) return new string[0];
-            return a.Items.Select(n => { var v = n as JVal; return v != null && v.IsStr ? Clean(v.Str) : ""; }).ToArray();
+            return a.Items.Select(n => { var v = n as JVal; return v != null && v.IsStr ? v.Str : ""; }).ToArray();
+        }
+
+        // ---------- 번역 ----------
+        static readonly System.Text.RegularExpressions.Regex Ph = new System.Text.RegularExpressions.Regex(
+            @"\$\{([^}]+)\}|#\{([^}]+)\}|\{\{([^}]+)\}\}|\\loc\[([^\]]+)\]|\\L\[([^\]]+)\]");
+
+        static bool HasHangul(string s) { foreach (char c in s ?? "") if (c >= 0xAC00 && c <= 0xD7A3) return true; return false; }
+
+        string Resolve(string raw)
+        {
+            string r;
+            if (gameTr.TryGetValue(raw, out r)) return r;
+            if (locale.TryGetValue(raw, out r)) return r;
+            if (locale.Count > 0 && Ph.IsMatch(raw))
+                return Ph.Replace(raw, m =>
+                {
+                    string key = m.Groups.Cast<System.Text.RegularExpressions.Group>().Skip(1).First(g => g.Success).Value;
+                    string v;
+                    return locale.TryGetValue(key, out v) ? v : m.Value;
+                });
+            return raw;
+        }
+
+        // 화면에 보일 글자: 게임 내장 번역 → 자동 번역 사전 → 원문
+        public string T(string raw)
+        {
+            if (string.IsNullOrEmpty(raw)) return "";
+            if (!Ko) return Clean(raw);
+            string s = Clean(Resolve(raw));
+            return Clean(Translator.Get(s) ?? s);
+        }
+
+        IEnumerable<string> AllRaw()
+        {
+            foreach (var d in new[] { Items, Weapons, Armors, Skills })
+                foreach (var it in d.Values) { yield return it.RawName; yield return it.RawDesc; }
+            foreach (var a in Actors.Values) { yield return Json.Str(a, "name"); yield return Json.Str(a, "nickname"); }
+            foreach (var c in Classes.Values) yield return Json.Str(c, "name");
+            foreach (var arr in new[] { swRaw, varRaw, equipRaw, paramRaw }) foreach (var x in arr) yield return x;
+            if (TitleRaw != null) yield return TitleRaw;
+        }
+
+        // 게임 내장 번역을 거친 뒤에도 일본어·중국어로 남는 것 (자동 번역 대상)
+        public IEnumerable<string> TextsForAuto()
+        {
+            return AllRaw().Where(r => !string.IsNullOrEmpty(r)).Select(r => Clean(Resolve(r))).Where(Translator.Needs).Distinct().ToList();
+        }
+
+        public void ApplyLang(bool ko)
+        {
+            Ko = ko;
+            foreach (var d in new[] { Items, Weapons, Armors, Skills })
+                foreach (var it in d.Values) { it.Name = T(it.RawName); it.Desc = T(it.RawDesc); }
+            SwitchNames = swRaw.Select(T).ToArray();
+            VarNames = varRaw.Select(T).ToArray();
+            if (equipRaw.Length > 1) EquipTypes = equipRaw.Select(T).ToArray();
+            string[] defP = { "최대 HP", "최대 MP", "공격력", "방어력", "마법력", "마법 방어", "민첩성", "운" };
+            for (int i = 0; i < 8; i++) ParamNames[i] = i < paramRaw.Length && paramRaw[i].Length > 0 ? T(paramRaw[i]) : defP[i];
+            if (TitleRaw != null) Title = T(TitleRaw);
+        }
+
+        // 게임 폴더 안의 한국어 번역 데이터 찾기. 찾은 개수를 돌려줌
+        public int FindGameTranslations()
+        {
+            gameTr.Clear(); locale.Clear();
+            if (!IsJs) return 0;
+            var files = new List<string>();
+            try { Walk(Root, 0, files); } catch { }
+            foreach (var f in files)
+            {
+                string low = f.ToLowerInvariant().Replace('\\', '/');
+                try
+                {
+                    // ① 번역된 데이터 폴더 (data_ko/Items.json 같은 것)
+                    if (Path.GetFileName(low) == "items.json" && !string.Equals(Path.GetDirectoryName(f), DataDir, StringComparison.OrdinalIgnoreCase))
+                    {
+                        string txt = File.ReadAllText(f, Encoding.UTF8);
+                        if (HasHangul(txt)) PairDataDir(Path.GetDirectoryName(f));
+                        continue;
+                    }
+                    // ② 키 → 번역 파일 (locales/ko.json, lang/kr.csv ...)
+                    if (!IsLocalePath(low)) continue;
+                    if (low.EndsWith(".json")) FlattenLocale(Json.Parse(File.ReadAllText(f, Encoding.UTF8)), "");
+                    else if (low.EndsWith(".csv") || low.EndsWith(".tsv") || low.EndsWith(".txt")) ReadCsv(f);
+                }
+                catch { }
+            }
+            // 원문 그대로가 키인 경우
+            foreach (var raw in AllRaw())
+            {
+                if (string.IsNullOrEmpty(raw) || gameTr.ContainsKey(raw)) continue;
+                string v;
+                if (locale.TryGetValue(raw, out v) && HasHangul(v)) gameTr[raw] = v;
+                else if (Ph.IsMatch(raw)) { string r = Resolve(raw); if (r != raw && HasHangul(r)) gameTr[raw] = r; }
+            }
+            return gameTr.Count;
+        }
+
+        static bool IsLocalePath(string low)
+        {
+            bool langDir = new[] { "locale", "lang", "translat", "i18n", "locali", "korean", "한국" }.Any(low.Contains);
+            string name = Path.GetFileNameWithoutExtension(low);
+            bool ko = System.Text.RegularExpressions.Regex.IsMatch(low, @"(^|[/_\-.])(ko|kr|kor|korean|ko-kr|ko_kr|한국어|한글)([/_\-.]|$)");
+            return langDir && ko;
+        }
+
+        static readonly HashSet<string> SkipDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "audio", "movies", "img", "fonts", "node_modules", "effects", "swiftshader", "locales_chromium" };
+
+        static void Walk(string dir, int depth, List<string> outFiles)
+        {
+            if (depth > 5 || outFiles.Count > 5000) return;
+            foreach (var f in Directory.GetFiles(dir))
+            {
+                string e = Path.GetExtension(f).ToLowerInvariant();
+                if (e == ".json" || e == ".csv" || e == ".tsv" || e == ".txt") outFiles.Add(f);
+            }
+            foreach (var d in Directory.GetDirectories(dir))
+            {
+                string n = Path.GetFileName(d);
+                if (SkipDirs.Contains(n) || n.StartsWith(".")) continue;
+                if (depth == 0 && n.Equals("locales", StringComparison.OrdinalIgnoreCase) && File.Exists(Path.Combine(dir, "nw.dll"))) continue; // NW.js 자체 언어 파일
+                Walk(d, depth + 1, outFiles);
+            }
+        }
+
+        void PairDataDir(string alt)
+        {
+            foreach (var pair in new[] { new { F = "Items.json", D = Items }, new { F = "Weapons.json", D = Weapons }, new { F = "Armors.json", D = Armors }, new { F = "Skills.json", D = Skills } })
+            {
+                var arr = ReadJson(Path.Combine(alt, pair.F)) as JArr;
+                if (arr == null) continue;
+                foreach (var n in arr.Items)
+                {
+                    DbItem it;
+                    if (!(n is JObj) || !pair.D.TryGetValue((int)Json.Num(n, "id"), out it)) continue;
+                    AddTr(it.RawName, Json.Str(n, "name")); AddTr(it.RawDesc, Json.Str(n, "description"));
+                }
+            }
+            foreach (var pair in new[] { new { F = "Actors.json", D = Actors }, new { F = "Classes.json", D = Classes } })
+            {
+                var arr = ReadJson(Path.Combine(alt, pair.F)) as JArr;
+                if (arr == null) continue;
+                foreach (var n in arr.Items)
+                {
+                    JObj o;
+                    if (!(n is JObj) || !pair.D.TryGetValue((int)Json.Num(n, "id"), out o)) continue;
+                    AddTr(Json.Str(o, "name"), Json.Str(n, "name")); AddTr(Json.Str(o, "nickname"), Json.Str(n, "nickname"));
+                }
+            }
+            var sys = ReadJson(Path.Combine(alt, "System.json"));
+            if (sys == null) return;
+            AddTr(TitleRaw, Json.Str(sys, "gameTitle"));
+            PairArr(swRaw, Json.Arr(sys, "switches")); PairArr(varRaw, Json.Arr(sys, "variables"));
+            PairArr(equipRaw, Json.Arr(sys, "equipTypes")); PairArr(paramRaw, Json.Arr(Json.Get(sys, "terms"), "params"));
+        }
+
+        static JNode ReadJson(string p) { return File.Exists(p) ? Json.Parse(File.ReadAllText(p, Encoding.UTF8)) : null; }
+
+        void PairArr(string[] raw, JArr tr)
+        {
+            for (int i = 0; i < raw.Length; i++) { var v = Json.At(tr, i) as JVal; if (v != null && v.IsStr) AddTr(raw[i], v.Str); }
+        }
+
+        void AddTr(string raw, string ko)
+        {
+            if (!string.IsNullOrEmpty(raw) && !string.IsNullOrEmpty(ko) && raw != ko && HasHangul(ko)) gameTr[raw] = ko;
+        }
+
+        void FlattenLocale(JNode n, string prefix)
+        {
+            var o = n as JObj;
+            if (o != null)
+            {
+                foreach (var k in o.Keys)
+                {
+                    var v = o.Map[k] as JVal;
+                    if (v != null && v.IsStr) { locale[k] = v.Str; if (prefix.Length > 0) locale[prefix + k] = v.Str; }
+                    else FlattenLocale(o.Map[k], prefix + k + ".");
+                }
+                return;
+            }
+            var a = n as JArr;
+            if (a != null) foreach (var x in a.Items)
+                {
+                    // [{ "key": .., "ko": .. }] 모양
+                    var xo = x as JObj;
+                    if (xo == null) continue;
+                    string key = new[] { "key", "id", "original", "source", "ja", "jp", "src" }.Select(kk => Json.Str(xo, kk)).FirstOrDefault(z => z.Length > 0);
+                    string val = new[] { "ko", "kr", "korean", "translation", "text", "target", "value" }.Select(kk => Json.Str(xo, kk)).FirstOrDefault(z => HasHangul(z));
+                    if (!string.IsNullOrEmpty(key) && val != null) locale[key] = val;
+                }
+        }
+
+        void ReadCsv(string f)
+        {
+            foreach (var line in File.ReadAllLines(f, Encoding.UTF8))
+            {
+                var cols = SplitCsv(line);
+                if (cols.Count < 2 || cols[0].Length == 0) continue;
+                var ko = cols.Skip(1).FirstOrDefault(HasHangul);
+                if (ko != null) locale[cols[0]] = ko;
+            }
+        }
+
+        static List<string> SplitCsv(string line)
+        {
+            var r = new List<string>();
+            char sep = line.Contains('\t') ? '\t' : ',';
+            var sb = new StringBuilder();
+            bool q = false;
+            for (int i = 0; i < line.Length; i++)
+            {
+                char c = line[i];
+                if (q) { if (c == '"') { if (i + 1 < line.Length && line[i + 1] == '"') { sb.Append('"'); i++; } else q = false; } else sb.Append(c); }
+                else if (c == '"') q = true;
+                else if (c == sep) { r.Add(sb.ToString()); sb.Clear(); }
+                else sb.Append(c);
+            }
+            r.Add(sb.ToString());
+            return r;
         }
 
         // ---------- 그림 ----------
@@ -304,7 +532,7 @@ namespace MiniCheat
         public string ClassName(int classId)
         {
             JObj c;
-            return Classes.TryGetValue(classId, out c) ? Clean(Json.Str(c, "name")) : "";
+            return Classes.TryGetValue(classId, out c) ? T(Json.Str(c, "name")) : "";
         }
 
         public int MaxLevel(int actorId)

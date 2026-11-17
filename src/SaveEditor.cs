@@ -30,6 +30,9 @@ namespace MiniCheat
 
         // 공통
         ComboBox cmbGame;
+        CheckBox chkKo;
+        GameData trDone;
+        bool translating;
         ListView lvSlots;
         TabControl tabs;
         Label lblStatus, lblNoEdit;
@@ -79,8 +82,17 @@ namespace MiniCheat
             var btnAdd = new Button { Text = "게임 폴더 추가...", Width = 120, Height = 26 };
             var btnBackups = new Button { Text = "백업 목록 · 복원", Width = 120, Height = 26 };
             var btnFolder = new Button { Text = "세이브 폴더 열기", Width = 120, Height = 26 };
+            chkKo = new CheckBox { Text = "한글 번역", Checked = true, AutoSize = true, Margin = new Padding(12, 6, 3, 0) };
             top.Controls.AddRange(new Control[] {
-                new Label { Text = "게임", AutoSize = true, Margin = new Padding(3, 6, 3, 0) }, cmbGame, btnAdd, btnBackups, btnFolder });
+                new Label { Text = "게임", AutoSize = true, Margin = new Padding(3, 6, 3, 0) }, cmbGame, btnAdd, btnBackups, btnFolder, chkKo });
+            chkKo.CheckedChanged += (s, e) =>
+            {
+                if (db == null) return;
+                db.ApplyLang(chkKo.Checked);
+                RefreshView();
+                RefreshGames(db.Root);
+                if (chkKo.Checked && trDone != db) StartTranslate(db);
+            };
             cmbGame.SelectedIndexChanged += (s, e) => { var g = cmbGame.SelectedItem as GameEntry; if (g != null && !settingGame) SetGame(g.Root); };
             btnAdd.Click += (s, e) => AddGameDialog();
             btnBackups.Click += (s, e) => ShowBackups();
@@ -129,7 +141,8 @@ namespace MiniCheat
             cmbGame.Items.Clear();
             foreach (var r in Backup.Games())
             {
-                var e = new GameEntry { Root = r, Title = QuickTitle(r) };
+                string qt = QuickTitle(r);
+                var e = new GameEntry { Root = r, Title = chkKo.Checked ? Translator.Or(qt) : qt };
                 cmbGame.Items.Add(e);
                 if (select != null && string.Equals(r, select, StringComparison.OrdinalIgnoreCase)) cmbGame.SelectedItem = e;
             }
@@ -200,12 +213,67 @@ namespace MiniCheat
                     lblNoEdit.Text = db.KindName + " 세이브 수정은 다음 업데이트에서 넣을게요.\n\n지금은 세이브 찾기 · 백업 · 복원을 쓸 수 있어요.";
                     if (db.Kind == RpgKind.Unknown) lblNoEdit.Text = "쯔꾸르 게임 폴더가 아닌 것 같아요.\nGame.exe 가 있는 폴더를 골라 주세요.";
                 }
+                db.ApplyLang(chkKo.Checked);
+                if (chkKo.Checked && db.IsJs) StartTranslate(db);
                 tabs.Visible = db.IsJs;
                 lblNoEdit.Visible = !db.IsJs;
                 lblStatus.Text = db.KindName + " · 세이브 " + slots.Count + "개" + (slots.Count == 0 ? "  (아직 세이브가 없어요. 게임에서 한 번 저장해 주세요)" : " · 왼쪽에서 고르세요");
             }
             catch (Exception ex) { MessageBox.Show(this, "게임을 여는 중 문제가 생겼어요: " + ex.Message, "미니 치트"); }
             Cursor = Cursors.Default;
+        }
+
+        // ① 게임 안 한국어 번역 → ② 남은 것 자동 번역 (한 번 한 건 사전에 저장)
+        async void StartTranslate(GameData g)
+        {
+            if (translating) return;
+            translating = true;
+            int found = 0, auto = 0;
+            string err = null;
+            try
+            {
+                await System.Threading.Tasks.Task.Run(() => { found = g.FindGameTranslations(); });
+                if (g != db) return;
+                g.ApplyLang(chkKo.Checked);
+                RefreshView();
+                var texts = g.TextsForAuto().ToList();
+                auto = Translator.CountMissing(texts);
+                if (auto > 0)
+                {
+                    lblStatus.Text = "한글로 자동 번역 중... (이 게임은 처음 한 번만, " + auto + "개)";
+                    try
+                    {
+                        await System.Threading.Tasks.Task.Run(() => Translator.Translate(texts, (d, t) =>
+                        {
+                            try { BeginInvoke((Action)(() => { if (g == db) lblStatus.Text = "한글로 자동 번역 중... " + d + " / " + t; })); } catch { }
+                        }));
+                    }
+                    catch (Exception ex) { err = ex.Message; }
+                }
+                if (g != db) return;
+                trDone = g;
+                g.ApplyLang(chkKo.Checked);
+                RefreshView();
+                RefreshGames(g.Root);
+                var parts = new List<string>();
+                if (found > 0) parts.Add("게임에 들어 있는 한국어 번역 " + found + "개를 썼어요");
+                if (err != null) parts.Add("자동 번역은 실패했어요 (인터넷 연결 확인)");
+                else if (auto > 0) parts.Add((found > 0 ? "나머지 " : "") + auto + "개는 자동 번역했어요");
+                if (parts.Count > 0) lblStatus.Text = string.Join(", ", parts) + ".";
+            }
+            finally { translating = false; }
+        }
+
+        void RefreshView()
+        {
+            if (root == null) return;
+            int actorId = actor == null ? -1 : (int)Json.Num(actor, "_actorId");
+            bool d = Dirty;
+            FillAll();
+            Dirty = d;
+            if (actorId >= 0)
+                foreach (ListViewItem li in lvActors.Items)
+                    if ((int)Json.Num((JObj)li.Tag, "_actorId") == actorId) { li.Selected = true; break; }
         }
 
         void ReloadSlots()
@@ -266,7 +334,7 @@ namespace MiniCheat
                 if (File.Exists(cur.Path) && File.GetLastWriteTimeUtc(cur.Path) != loadedTime)
                     if (MessageBox.Show(this, "그 사이에 게임이 이 세이브를 다시 저장했어요.\n그래도 지금 수정한 내용으로 덮어쓸까요? (원래 파일은 백업돼요)", "미니 치트", MessageBoxButtons.YesNo) != DialogResult.Yes)
                         return false;
-                Backup.Make(db.Title, cur.Path, null);
+                Backup.Make(db.BackupName, cur.Path, null);
                 SaveCodec.Write(cur.Path, Json.Write(root), fmt);
                 loadedTime = File.GetLastWriteTimeUtc(cur.Path);
                 Dirty = false;
@@ -397,7 +465,7 @@ namespace MiniCheat
             {
                 if (loading || actor == null) return;
                 actor["_name"] = JVal.S(txtName.Text);
-                if (lvActors.SelectedItems.Count > 0) lvActors.SelectedItems[0].Text = txtName.Text + "  Lv." + numLevel.Value;
+                if (lvActors.SelectedItems.Count > 0) lvActors.SelectedItems[0].Text = db.T(txtName.Text) + "  Lv." + numLevel.Value;
                 Changed();
             };
             numLevel.ValueChanged += (s, e) =>
@@ -407,7 +475,7 @@ namespace MiniCheat
                 actor["_level"] = JVal.N(lv);
                 var exp = Json.Obj(actor, "_exp");
                 if (exp != null) exp[cls.ToString()] = JVal.N(db.ExpForLevel(cls, lv));
-                if (lvActors.SelectedItems.Count > 0) lvActors.SelectedItems[0].Text = txtName.Text + "  Lv." + lv;
+                if (lvActors.SelectedItems.Count > 0) lvActors.SelectedItems[0].Text = db.T(txtName.Text) + "  Lv." + lv;
                 loading = true; FillParams(); loading = false;
                 Changed();
             };
@@ -468,7 +536,7 @@ namespace MiniCheat
             {
                 bool inParty = partyIds.Contains((int)Json.Num(a, "_actorId"));
                 ilFaces.Images.Add(db.Face(Json.Str(a, "_faceName"), (int)Json.Num(a, "_faceIndex"), 64));
-                lvActors.Items.Add(new ListViewItem(Json.Str(a, "_name") + "  Lv." + Json.Num(a, "_level") + (inParty ? "" : "  (대기)"), ilFaces.Images.Count - 1)
+                lvActors.Items.Add(new ListViewItem(db.T(Json.Str(a, "_name")) + "  Lv." + Json.Num(a, "_level") + (inParty ? "" : "  (대기)"), ilFaces.Images.Count - 1)
                 {
                     Tag = a,
                     ForeColor = inParty ? SystemColors.WindowText : Color.Gray
@@ -655,7 +723,7 @@ namespace MiniCheat
             var right = new Panel { Dock = DockStyle.Right, Width = 230, Padding = new Padding(8) };
             picItem = new PictureBox { Left = 10, Top = 6, Width = 64, Height = 64, SizeMode = PictureBoxSizeMode.CenterImage };
             lblItemName = new Label { Left = 82, Top = 10, Width = 140, Height = 40, Font = new Font(Font.FontFamily, 10F, FontStyle.Bold), AutoEllipsis = true };
-            lblItemDesc = new Label { Left = 10, Top = 76, Width = 212, Height = 64, ForeColor = Color.DimGray, AutoEllipsis = true };
+            lblItemDesc = new Label { Left = 10, Top = 76, Width = 212, Height = 66, ForeColor = Color.DimGray, AutoEllipsis = true };
             numCount = new NumericUpDown { Left = 50, Top = 146, Width = 90, Maximum = 9999 };
             var b1 = new Button { Text = "+1", Left = 10, Top = 178, Width = 50, Height = 26 };
             var b10 = new Button { Text = "+10", Left = 66, Top = 178, Width = 50, Height = 26 };
@@ -753,7 +821,8 @@ namespace MiniCheat
             loading = true;
             picItem.Image = Ico(it.Icon, 64);
             lblItemName.Text = lvBag.SelectedItems.Count > 1 ? it.Name + " 외 " + (lvBag.SelectedItems.Count - 1) + "개" : it.Name;
-            lblItemDesc.Text = it.Desc;
+            string orig = GameData.Clean(it.RawName);
+            lblItemDesc.Text = it.Desc + (db.Ko && orig.Length > 0 && orig != it.Name ? "\n원문: " + orig : "");
             numCount.Value = Clamp(Count(it), numCount);
             loading = false;
         }
@@ -845,6 +914,8 @@ namespace MiniCheat
                 r.CreateCells(g);
                 r.Cells[0].Value = i;
                 r.Cells[1].Value = name;
+                var rawArr = isSwitch ? db.swRaw : db.varRaw;
+                if (db.Ko && i < rawArr.Length && GameData.Clean(rawArr[i]) != name) r.Cells[1].ToolTipText = "원문: " + GameData.Clean(rawArr[i]);
                 if (isSwitch) r.Cells[2].Value = cell != null && cell.Raw == "true";
                 else
                 {
@@ -1058,7 +1129,7 @@ namespace MiniCheat
             AutoScaleDimensions = new SizeF(96F, 96F);
             AutoScaleMode = AutoScaleMode.Dpi;
             Font = new Font("맑은 고딕", 9F);
-            Text = "백업 목록 — " + db.Title;
+            Text = "백업 목록 — " + db.BackupName;
             ClientSize = new Size(560, 440);
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
@@ -1083,7 +1154,7 @@ namespace MiniCheat
             lv.DoubleClick += (s, e) => RestoreSel();
             bNow.Click += (s, e) =>
             {
-                foreach (var sl in slots) Backup.Make(db.Title, sl.Path, "수동");
+                foreach (var sl in slots) Backup.Make(db.BackupName, sl.Path, "수동");
                 Fill();
             };
             bDel.Click += (s, e) =>
@@ -1093,7 +1164,7 @@ namespace MiniCheat
                 try { File.Delete(p); var d = Path.GetDirectoryName(p); if (Directory.GetFiles(d).Length == 0) Directory.Delete(d); } catch { }
                 Fill();
             };
-            bOpen.Click += (s, e) => { var d = Backup.Dir(db.Title); Directory.CreateDirectory(d); Process.Start("explorer.exe", "\"" + d + "\""); };
+            bOpen.Click += (s, e) => { var d = Backup.Dir(db.BackupName); Directory.CreateDirectory(d); Process.Start("explorer.exe", "\"" + d + "\""); };
             Fill();
             ResumeLayout(false);
         }
@@ -1102,7 +1173,7 @@ namespace MiniCheat
         {
             lv.BeginUpdate();
             lv.Items.Clear();
-            foreach (var b in Backup.List(db.Title))
+            foreach (var b in Backup.List(db.BackupName))
             {
                 long size = 0;
                 try { size = new FileInfo(b[2]).Length; } catch { }
@@ -1122,7 +1193,7 @@ namespace MiniCheat
                 Directory.CreateDirectory(db.SaveDir);
                 string tmp = Path.GetTempFileName();
                 File.Copy(src, tmp, true); // 백업 정리로 원본이 지워져도 안전하게
-                if (File.Exists(dst)) Backup.Make(db.Title, dst, "되돌리기 전");
+                if (File.Exists(dst)) Backup.Make(db.BackupName, dst, "되돌리기 전");
                 File.Copy(tmp, dst, true);
                 File.Delete(tmp);
                 Restored = true;
