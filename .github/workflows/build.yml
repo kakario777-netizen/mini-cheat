@@ -1,0 +1,27 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: dotnet build MiniCheat.csproj -c Release -p:Version=1.0.${{ github.run_number }}
+
+      - name: Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v1.0.${{ github.run_number }}" bin/Release/net48/MiniCheat.exe \
+            --title "미니 치트 v1.0.${{ github.run_number }}" \
+            --notes "자동 빌드 — 프로그램을 켜면 자동으로 이 버전으로 업데이트돼요."
