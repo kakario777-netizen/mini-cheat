@@ -45,6 +45,8 @@ namespace MiniCheat
         Button btnFirst, btnNext, btnNew, btnAdd;
         ProgressBar bar;
         ListView lvRes, lvSaved;
+        SaveEditor saveEd;
+        TabControl mainTabs;
         readonly Timer tRefresh = new Timer { Interval = 500 };
         readonly Timer tFreeze = new Timer { Interval = 100 };
 
@@ -55,8 +57,8 @@ namespace MiniCheat
             AutoScaleMode = AutoScaleMode.Dpi;
             Font = new Font("맑은 고딕", 9F);
             Text = "미니 치트 v" + Updater.Current;
-            ClientSize = new Size(840, 640);
-            MinimumSize = new Size(700, 500);
+            ClientSize = new Size(1100, 700);
+            MinimumSize = new Size(900, 560);
             StartPosition = FormStartPosition.CenterScreen;
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
@@ -126,7 +128,15 @@ namespace MiniCheat
 
             lblStatus = new Label { Dock = DockStyle.Bottom, Height = 22, TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0), ForeColor = Color.DimGray, Text = "준비됨" };
 
-            Controls.Add(center); Controls.Add(split); Controls.Add(bottom); Controls.Add(lblStatus); Controls.Add(top);
+            var pageMem = new TabPage("메모리 검색");
+            pageMem.Controls.Add(center); pageMem.Controls.Add(split); pageMem.Controls.Add(bottom);
+            var pageSave = new TabPage("세이브 수정");
+            saveEd = new SaveEditor { Dock = DockStyle.Fill };
+            pageSave.Controls.Add(saveEd);
+            mainTabs = new TabControl { Dock = DockStyle.Fill, Padding = new Point(14, 5) };
+            mainTabs.TabPages.Add(pageMem); mainTabs.TabPages.Add(pageSave);
+
+            Controls.Add(mainTabs); Controls.Add(lblStatus); Controls.Add(top);
 
             // ── 메뉴 ──
             var mRes = new ContextMenuStrip();
@@ -171,6 +181,12 @@ namespace MiniCheat
             CheckUpdate(false);
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!saveEd.AskClose()) e.Cancel = true;
+            base.OnFormClosing(e);
+        }
+
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             Detach();
@@ -212,6 +228,7 @@ namespace MiniCheat
             lblProc.Text = p.ProcessName + ".exe  (PID " + p.Id + ")" + (rpg != null ? "  —  " + rpg + " 감지" : "") + extra;
             if (k >= 0) cmbKind.SelectedIndex = k;
             ResetScan();
+            if (k >= 0) saveEd.OfferGame(exe); // 세이브 수정 탭에도 같은 게임
         }
 
         static Process PickBiggest(string exe)
@@ -493,6 +510,7 @@ namespace MiniCheat
             try
             {
                 await Task.Run(() => Updater.Download(r[1]));
+                if (saveEd.Dirty) { lblStatus.Text = "새 버전을 받았어요. 세이브 저장 후 프로그램을 다시 켜면 적용돼요."; return; }
                 Detach();
                 Updater.SwapAndRestart();
             }
