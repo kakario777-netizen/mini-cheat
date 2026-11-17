@@ -22,6 +22,7 @@ namespace MiniCheat
         SaveSlot cur;
         JObj root;
         SaveFmt fmt;
+        RubySave rsave;
         DateTime loadedTime;
         bool loading, settingGame;
         public bool Dirty { get; private set; }
@@ -203,20 +204,24 @@ namespace MiniCheat
             {
                 db = GameData.Load(dir);
                 iconCache.Clear();
+                // 24px 아이콘 게임은 정확히 2배(48), 32px 게임은 그대로(40칸 안에 32)
+                var cell = db.IsJs ? new Size(40, 40) : new Size(48, 48);
+                if (ilBag.ImageSize != cell) ilBag.ImageSize = cell;
+                ilBag.Images.Clear();
                 Backup.RememberGame(dir);
                 RefreshGames(dir);
                 cur = null; root = null;
                 ClearEditor();
                 ReloadSlots();
-                if (!db.IsJs)
+                if (!db.CanEdit)
                 {
                     lblNoEdit.Text = db.KindName + " 세이브 수정은 다음 업데이트에서 넣을게요.\n\n지금은 세이브 찾기 · 백업 · 복원을 쓸 수 있어요.";
                     if (db.Kind == RpgKind.Unknown) lblNoEdit.Text = "쯔꾸르 게임 폴더가 아닌 것 같아요.\nGame.exe 가 있는 폴더를 골라 주세요.";
                 }
                 db.ApplyLang(chkKo.Checked);
-                if (chkKo.Checked && db.IsJs) StartTranslate(db);
-                tabs.Visible = db.IsJs;
-                lblNoEdit.Visible = !db.IsJs;
+                if (chkKo.Checked && db.CanEdit) StartTranslate(db);
+                tabs.Visible = db.CanEdit;
+                lblNoEdit.Visible = !db.CanEdit;
                 lblStatus.Text = db.KindName + " · 세이브 " + slots.Count + "개" + (slots.Count == 0 ? "  (아직 세이브가 없어요. 게임에서 한 번 저장해 주세요)" : " · 왼쪽에서 고르세요");
             }
             catch (Exception ex) { MessageBox.Show(this, "게임을 여는 중 문제가 생겼어요: " + ex.Message, "미니 치트"); }
@@ -300,7 +305,7 @@ namespace MiniCheat
             var s = (SaveSlot)lvSlots.SelectedItems[0].Tag;
             if (cur != null && s.Path == cur.Path) return;
             if (!ConfirmDiscard()) { ReloadSlots(); return; }
-            if (db == null || !db.IsJs) { cur = s; return; }
+            if (db == null || !db.CanEdit) { cur = s; return; }
             LoadSlot(s);
         }
 
@@ -308,8 +313,8 @@ namespace MiniCheat
         {
             try
             {
-                string json = SaveCodec.Read(s.Path, out fmt);
-                root = Json.Parse(json) as JObj;
+                if (db.IsRuby) { rsave = RubySave.Load(s.Path, db.Kind); root = rsave.Root; }
+                else { rsave = null; root = Json.Parse(SaveCodec.Read(s.Path, out fmt)) as JObj; }
                 if (root == null) throw new Exception("세이브 모양이 예상과 달라요");
                 cur = s;
                 loadedTime = File.GetLastWriteTimeUtc(s.Path);
@@ -335,7 +340,8 @@ namespace MiniCheat
                     if (MessageBox.Show(this, "그 사이에 게임이 이 세이브를 다시 저장했어요.\n그래도 지금 수정한 내용으로 덮어쓸까요? (원래 파일은 백업돼요)", "미니 치트", MessageBoxButtons.YesNo) != DialogResult.Yes)
                         return false;
                 Backup.Make(db.BackupName, cur.Path, null);
-                SaveCodec.Write(cur.Path, Json.Write(root), fmt);
+                if (rsave != null) rsave.Save(cur.Path);
+                else SaveCodec.Write(cur.Path, Json.Write(root), fmt);
                 loadedTime = File.GetLastWriteTimeUtc(cur.Path);
                 Dirty = false;
                 btnSave.Enabled = false;
@@ -473,14 +479,16 @@ namespace MiniCheat
                 if (loading || actor == null) return;
                 int lv = (int)numLevel.Value, cls = (int)Json.Num(actor, "_classId", 1);
                 actor["_level"] = JVal.N(lv);
+                double need = db.ExpFor((int)Json.Num(actor, "_actorId"), cls, lv);
                 var exp = Json.Obj(actor, "_exp");
-                if (exp != null) exp[cls.ToString()] = JVal.N(db.ExpForLevel(cls, lv));
+                if (exp != null) exp[cls.ToString()] = JVal.N(need);          // MV·MZ·VX Ace: 직업별
+                else if (Json.Get(actor, "_exp") is JVal) actor["_exp"] = JVal.N(need); // VX·XP: 숫자 하나
                 if (lvActors.SelectedItems.Count > 0) lvActors.SelectedItems[0].Text = db.T(txtName.Text) + "  Lv." + lv;
                 loading = true; FillParams(); loading = false;
                 Changed();
             };
             numHp.ValueChanged += (s, e) => { if (!loading && actor != null) { actor["_hp"] = JVal.N((double)numHp.Value); Changed(); } };
-            numMp.ValueChanged += (s, e) => { if (!loading && actor != null) { actor["_mp"] = JVal.N((double)numMp.Value); Changed(); } };
+            numMp.ValueChanged += (s, e) => { if (!loading && actor != null) { actor[db.MpKey] = JVal.N((double)numMp.Value); Changed(); } };
             btnFull.Click += (s, e) =>
             {
                 if (actor == null) return;
@@ -492,9 +500,7 @@ namespace MiniCheat
                 if (loading || actor == null || e.ColumnIndex != 2 || e.RowIndex < 0) return;
                 double v;
                 if (!double.TryParse(Convert.ToString(gridParams.Rows[e.RowIndex].Cells[2].Value), out v)) v = 0;
-                var plus = Json.Arr(actor, "_paramPlus");
-                if (plus == null) { plus = new JArr(); actor["_paramPlus"] = plus; }
-                Json.SetAt(plus, e.RowIndex, JVal.N(Math.Round(v)));
+                SetPlus(e.RowIndex, Math.Round(v));
                 loading = true; FillParams(); loading = false;
                 Changed();
             };
@@ -530,7 +536,7 @@ namespace MiniCheat
             ilFaces.Images.Clear();
             var partyIds = new List<int>();
             var pa = Json.Arr(Party, "_actors");
-            if (pa != null) partyIds = pa.Items.Select(n => (int)Json.Num(n)).ToList();
+            if (pa != null) partyIds = pa.Items.Select(n => n is JObj ? (int)Json.Num(n, "_actorId") : (int)Json.Num(n)).ToList(); // XP 는 캐릭터 자체가 들어 있음
             var all = AllActors().OrderBy(a => { int i = partyIds.IndexOf((int)Json.Num(a, "_actorId")); return i < 0 ? 1000 : i; }).ToList();
             foreach (var a in all)
             {
@@ -562,77 +568,123 @@ namespace MiniCheat
             numLevel.Maximum = Math.Max(db.MaxLevel((int)Json.Num(a, "_actorId")), (int)Json.Num(a, "_level", 1));
             numLevel.Value = Clamp(Math.Max(1, Json.Num(a, "_level", 1)), numLevel);
             numHp.Value = Clamp(Json.Num(a, "_hp"), numHp);
-            numMp.Value = Clamp(Json.Num(a, "_mp"), numMp);
+            numMp.Value = Clamp(Json.Num(a, db.MpKey), numMp);
             FillParams();
             FillEquips();
             FillSkills();
             loading = was;
         }
 
-        double ParamTotal(int i)
+        double GetPlus(int i)
         {
-            int cls = (int)Json.Num(actor, "_classId", 1), lv = (int)Json.Num(actor, "_level", 1);
-            return db.BaseParam(cls, i, lv) + Json.Num(Json.At(Json.Arr(actor, "_paramPlus"), i));
+            var keys = db.PlusKeys;
+            return keys != null ? Json.Num(actor, keys[i]) : Json.Num(Json.At(Json.Arr(actor, "_paramPlus"), i));
         }
+
+        void SetPlus(int i, double v)
+        {
+            var keys = db.PlusKeys;
+            if (keys != null) { actor[keys[i]] = JVal.N(v); return; }
+            var plus = Json.Arr(actor, "_paramPlus");
+            if (plus == null) { plus = new JArr(); actor["_paramPlus"] = plus; }
+            Json.SetAt(plus, i, JVal.N(v));
+        }
+
+        int BaseOf(int i)
+        {
+            return db.BaseParam((int)Json.Num(actor, "_actorId"), (int)Json.Num(actor, "_classId", 1), i, (int)Json.Num(actor, "_level", 1));
+        }
+
+        double ParamTotal(int i) { return BaseOf(i) + GetPlus(i); }
 
         void FillParams()
         {
             gridParams.Rows.Clear();
             if (actor == null) return;
-            int cls = (int)Json.Num(actor, "_classId", 1), lv = (int)Json.Num(actor, "_level", 1);
-            var plus = Json.Arr(actor, "_paramPlus");
-            for (int i = 0; i < 8; i++)
+            for (int i = 0; i < db.ParamCount; i++)
             {
-                int b = db.BaseParam(cls, i, lv);
-                double pl = Json.Num(Json.At(plus, i));
+                int b = BaseOf(i);
+                double pl = GetPlus(i);
                 gridParams.Rows.Add(db.ParamNames[i], b, pl, b + pl);
             }
         }
 
-        // 슬롯별 장비 종류 (기본: 무기·방패·머리·몸·장신구)
-        int SlotType(int slot, JObj item)
+        // 장비 칸 하나: 종류(1 무기, 2 방패, 3 머리, 4 몸, 5 장신구), 지금 장비, 바꾸기
+        class EquipSlot { public int EType; public DbItem Cur; public Action<DbItem> Set; }
+
+        List<EquipSlot> EquipSlots()
         {
-            if (slot == 1 && Json.Str(item, "_dataClass") == "weapon") return 1; // 쌍수
-            return slot + 1;
+            var list = new List<EquipSlot>();
+            if (actor == null) return list;
+            if (db.Kind == RpgKind.VX || db.Kind == RpgKind.XP)
+            {
+                // VX·XP: 무기 번호, 방어구1~4 번호가 따로 저장됨
+                string[] keys = { "_weaponId", "_armor1Id", "_armor2Id", "_armor3Id", "_armor4Id" };
+                for (int i = 0; i < keys.Length; i++)
+                {
+                    if (Json.Get(actor, keys[i]) == null) continue;
+                    string k = keys[i];
+                    var src = i == 0 ? db.Weapons : db.Armors;
+                    DbItem cur;
+                    src.TryGetValue((int)Json.Num(actor, k), out cur);
+                    list.Add(new EquipSlot { EType = i + 1, Cur = cur, Set = it => actor[k] = JVal.N(it == null ? 0 : it.Id) });
+                }
+                return list;
+            }
+            var eq = Json.Arr(actor, "_equips");
+            if (eq == null) return list;
+            bool ace = db.Kind == RpgKind.VXAce;
+            for (int i = 0; i < eq.Items.Count; i++)
+            {
+                var gi = eq.Items[i] as JObj;
+                // MV·MZ: _dataClass "weapon"/"armor",  VX Ace: _class 가 RPG::Weapon / RPG::Armor
+                string cls = ace ? (Json.Str(gi, "_class").EndsWith("RPG::Weapon") ? "weapon" : Json.Str(gi, "_class").EndsWith("RPG::Armor") ? "armor" : "")
+                                 : Json.Str(gi, "_dataClass");
+                int et = i == 1 && cls == "weapon" ? 1 : i + 1; // 쌍수면 두 번째 칸도 무기
+                DbItem cur = null;
+                int id = (int)Json.Num(gi, "_itemId");
+                if (id > 0) (cls == "weapon" ? db.Weapons : db.Armors).TryGetValue(id, out cur);
+                int slot = i;
+                list.Add(new EquipSlot
+                {
+                    EType = et, Cur = cur,
+                    Set = it =>
+                    {
+                        var g = Json.At(eq, slot) as JObj;
+                        if (g == null) { g = new JObj(); g["@"] = JVal.S(ace ? "Game_BaseItem" : "Game_Item"); Json.SetAt(eq, slot, g); }
+                        if (ace) g["_class"] = it == null ? (JNode)new JVal { Raw = "null" } : JVal.S(RubyBridge.ClassTag + (it.Kind == 1 ? "RPG::Weapon" : "RPG::Armor"));
+                        else g["_dataClass"] = JVal.S(it == null ? "" : it.Kind == 1 ? "weapon" : "armor");
+                        g["_itemId"] = JVal.N(it == null ? 0 : it.Id);
+                    }
+                });
+            }
+            return list;
         }
 
         void FillEquips()
         {
-            var eq = Json.Arr(actor, "_equips");
-            if (eq == null) return;
-            for (int i = 0; i < eq.Items.Count; i++)
+            var slots = EquipSlots();
+            for (int i = 0; i < slots.Count; i++)
             {
-                var gi = eq.Items[i] as JObj;
-                int et = SlotType(i, gi);
-                string cls = Json.Str(gi, "_dataClass");
-                int id = (int)Json.Num(gi, "_itemId");
+                var sl = slots[i];
+                int et = sl.EType;
                 var label = new Label { Text = et < db.EquipTypes.Length && db.EquipTypes[et].Length > 0 ? db.EquipTypes[et] : "장비 " + (i + 1), Left = 0, Top = i * 32 + 5, Width = 70, AutoEllipsis = true };
-                var cb = MakeIconCombo(0, i * 32, 245);
-                cb.Left = 72;
+                var cb = MakeIconCombo(72, i * 32, 245);
                 cb.Items.Add("(없음)");
                 var pool = et == 1 ? db.Weapons.Values : db.Armors.Values.Where(x => x.EType == et);
-                DbItem curItem = null;
-                if (id > 0) { var src = cls == "weapon" ? db.Weapons : db.Armors; src.TryGetValue(id, out curItem); }
                 foreach (var it in pool) cb.Items.Add(it);
-                if (curItem != null && !cb.Items.Contains(curItem)) cb.Items.Add(curItem);
-                cb.SelectedItem = curItem != null ? (object)curItem : "(없음)";
-                int slot = i;
-                cb.SelectedIndexChanged += (s, e) => SetEquip(slot, cb.SelectedItem as DbItem);
+                if (sl.Cur != null && !cb.Items.Contains(sl.Cur)) cb.Items.Add(sl.Cur);
+                cb.SelectedItem = sl.Cur != null ? (object)sl.Cur : "(없음)";
+                cb.SelectedIndexChanged += (s, e) =>
+                {
+                    if (loading || actor == null) return;
+                    sl.Set(cb.SelectedItem as DbItem);
+                    Changed();
+                };
                 equipPanel.Controls.Add(label);
                 equipPanel.Controls.Add(cb);
             }
-            equipPanel.Height = Math.Max(40, eq.Items.Count * 32 + 4);
-        }
-
-        void SetEquip(int slot, DbItem it)
-        {
-            if (loading || actor == null) return;
-            var eq = Json.Arr(actor, "_equips");
-            var gi = Json.At(eq, slot) as JObj;
-            if (gi == null) { gi = new JObj(); gi["@"] = JVal.S("Game_Item"); Json.SetAt(eq, slot, gi); }
-            gi["_dataClass"] = JVal.S(it == null ? "" : it.Kind == 1 ? "weapon" : "armor");
-            gi["_itemId"] = JVal.N(it == null ? 0 : it.Id);
-            Changed();
+            equipPanel.Height = Math.Max(40, slots.Count * 32 + 4);
         }
 
         ComboBox MakeIconCombo(int x, int y, int w)
@@ -806,7 +858,7 @@ namespace MiniCheat
                 if (n <= 0 && !chkAll.Checked) continue;
                 if (f.Length > 0 && it.Name.IndexOf(f, StringComparison.OrdinalIgnoreCase) < 0) continue;
                 string key = "i" + it.Icon;
-                if (!ilBag.Images.ContainsKey(key)) ilBag.Images.Add(key, Ico(it.Icon, 40));
+                if (!ilBag.Images.ContainsKey(key)) ilBag.Images.Add(key, Ico(it.Icon, ilBag.ImageSize.Width));
                 lvBag.Items.Add(new ListViewItem(it.Name + "  ×" + n) { Tag = it, ImageKey = key, ToolTipText = it.Desc, ForeColor = n > 0 ? SystemColors.WindowText : Color.Silver });
             }
             lvBag.EndUpdate();
@@ -948,7 +1000,8 @@ namespace MiniCheat
             {
                 if (loading || root == null) return;
                 double sec = (double)(numH.Value * 3600 + numM.Value * 60 + numS.Value);
-                Json.SetNum(Json.Get(root, "system"), "_framesOnSave", sec * 60);
+                if (Json.Get(root, "frameCount") != null) root["frameCount"] = JVal.N(sec * Fps); // VX·XP
+                else Json.SetNum(Json.Get(root, "system"), "_framesOnSave", sec * Fps);
                 Changed();
             };
             numH.ValueChanged += playChanged; numM.ValueChanged += playChanged; numS.ValueChanged += playChanged;
@@ -973,10 +1026,17 @@ namespace MiniCheat
             return page;
         }
 
+        int Fps { get { return db.Kind == RpgKind.XP ? 40 : 60; } }
+
+        double Frames()
+        {
+            if (Json.Get(root, "frameCount") != null) return Json.Num(root, "frameCount");
+            return Json.Num(Json.Get(root, "system"), "_framesOnSave");
+        }
+
         void FillEtc()
         {
-            double frames = Json.Num(Json.Get(root, "system"), "_framesOnSave");
-            long sec = (long)(frames / 60);
+            long sec = (long)(Frames() / Fps);
             numH.Value = Clamp(sec / 3600, numH); numM.Value = sec / 60 % 60; numS.Value = sec % 60;
             numSteps.Value = Clamp(Json.Num(Party, "_steps"), numSteps);
             numSaves.Value = Clamp(Json.Num(Json.Get(root, "system"), "_saveCount"), numSaves);
