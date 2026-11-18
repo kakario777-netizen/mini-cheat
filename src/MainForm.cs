@@ -204,6 +204,14 @@ namespace MiniCheat
 
         // ── 게임기 모드 화면이 쓰는 것들 ──
         internal void CheckUpdatePublic() { CheckUpdate(true); }
+
+        // 팝업 모드: 윈도우 메시지 상자를 띄우지 않고(포커스를 뺏으니까) 이 함수로 알림
+        internal Action<string> Quiet;
+        void Msg(string text)
+        {
+            if (Quiet != null) Quiet(text);
+            else MessageBox.Show(this, text, "미니 치트");
+        }
         internal bool HasProcess { get { return h != IntPtr.Zero; } }
         internal IntPtr H { get { return h; } }
         internal string ProcText { get { return lblProc.Text; } }
@@ -287,7 +295,7 @@ namespace MiniCheat
             IntPtr nh = Native.OpenProcess(Native.AccessAll, false, p.Id);
             if (nh == IntPtr.Zero)
             {
-                MessageBox.Show(this, "이 프로그램에 접근하지 못했어요.\n미니 치트를 마우스 오른쪽 버튼 → '관리자 권한으로 실행'으로 켜 보세요.", "미니 치트");
+                Msg("이 프로그램에 접근하지 못했어요.\n미니 치트를 마우스 오른쪽 버튼 → '관리자 권한으로 실행'으로 켜 보세요.");
                 return;
             }
             Detach();
@@ -368,12 +376,12 @@ namespace MiniCheat
         async Task Scan(bool first)
         {
             if (busy || h == IntPtr.Zero) return;
-            if (!Alive()) { MessageBox.Show(this, "게임이 꺼진 것 같아요. 프로세스를 다시 골라 주세요.", "미니 치트"); return; }
+            if (!Alive()) { Msg("게임이 꺼진 것 같아요. 프로세스를 다시 골라 주세요."); return; }
             Cmp c = (scanned ? NextVals : FirstVals)[Math.Max(0, cmbCmp.SelectedIndex)];
             double t = 0;
             if (c == Cmp.Exact && !ParseNum(txtVal.Text, out t))
             {
-                MessageBox.Show(this, "찾을 값을 숫자로 넣어 주세요.", "미니 치트");
+                Msg("찾을 값을 숫자로 넣어 주세요.");
                 txtVal.Focus();
                 return;
             }
@@ -393,12 +401,12 @@ namespace MiniCheat
             catch (OutOfMemoryException)
             {
                 ok = false;
-                MessageBox.Show(this, "메모리가 부족해요. '처음 값 모름' 대신 정확한 값으로 검색해 보세요.", "미니 치트");
+                Msg("메모리가 부족해요. '처음 값 모름' 대신 정확한 값으로 검색해 보세요.");
             }
             catch (Exception ex)
             {
                 ok = false;
-                MessageBox.Show(this, "검색 중 문제가 생겼어요: " + ex.Message, "미니 치트");
+                Msg("검색 중 문제가 생겼어요: " + ex.Message);
             }
             busy = false;
             if (ok)
@@ -501,8 +509,8 @@ namespace MiniCheat
             string r = Prompt.Number(this, "값 바꾸기", sv.Desc + "  —  새 값:", cur);
             if (r == null) return;
             double v;
-            if (!ParseNum(r, out v)) { MessageBox.Show(this, "숫자로 넣어 주세요.", "미니 치트"); return; }
-            if (!Scanner.WriteValue(h, sv.Addr, sv.Kind, v)) MessageBox.Show(this, "값을 쓰지 못했어요.", "미니 치트");
+            if (!ParseNum(r, out v)) { Msg("숫자로 넣어 주세요."); return; }
+            if (!Scanner.WriteValue(h, sv.Addr, sv.Kind, v)) Msg("값을 쓰지 못했어요.");
             if (sv.Frozen) sv.FrozenVal = v;
             RefreshValues();
         }
@@ -523,7 +531,7 @@ namespace MiniCheat
             string r = Prompt.Number(this, "값 한꺼번에 바꾸기", "선택한 " + lvRes.SelectedIndices.Count + "개 결과에 넣을 값:", txtVal.Text);
             if (r == null) return;
             double v;
-            if (!ParseNum(r, out v)) { MessageBox.Show(this, "숫자로 넣어 주세요.", "미니 치트"); return; }
+            if (!ParseNum(r, out v)) { Msg("숫자로 넣어 주세요."); return; }
             foreach (int i in lvRes.SelectedIndices)
                 if (i < s.Count) Scanner.WriteValue(h, s.Addr[i], (VK)s.Kd[i], v);
             lvRes.Invalidate();
@@ -564,13 +572,13 @@ namespace MiniCheat
             catch
             {
                 lblStatus.Text = manual ? "업데이트 확인 실패 (인터넷 연결 확인)" : "준비됨";
-                if (manual) MessageBox.Show(this, "업데이트를 확인하지 못했어요. 인터넷 연결을 확인해 주세요.", "미니 치트");
+                if (manual) Msg("업데이트를 확인하지 못했어요. 인터넷 연결을 확인해 주세요.");
                 return;
             }
             if (r == null)
             {
                 lblStatus.Text = "준비됨  (최신 버전)";
-                if (manual) MessageBox.Show(this, "지금 최신 버전이에요 (v" + Updater.Current + ").", "미니 치트");
+                if (manual) Msg("지금 최신 버전이에요 (v" + Updater.Current + ").");
                 return;
             }
             lblStatus.Text = "새 버전 v" + r[0] + " 받는 중... 다 받으면 자동으로 다시 켜져요";

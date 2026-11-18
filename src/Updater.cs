@@ -61,6 +61,15 @@ namespace MiniCheat
         }
 
         // 실행 중인 exe 는 이름만 바꿀 수 있어서: 지금 것 → .old, 새 것 → 원래 이름, 다시 켜기
+        // 다시 켜지 않고 파일만 바꿔 둠 (팝업 모드 — 다음에 켤 때 새 버전)
+        public static void SwapOnly()
+        {
+            string exe = Exe, nw = exe + ".new", old = exe + ".old";
+            if (File.Exists(old)) File.Delete(old);
+            File.Move(exe, old);
+            File.Move(nw, exe);
+        }
+
         public static void SwapAndRestart()
         {
             string exe = Exe, nw = exe + ".new", old = exe + ".old";

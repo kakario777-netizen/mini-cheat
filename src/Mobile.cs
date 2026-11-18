@@ -47,6 +47,7 @@ namespace MiniCheat
         public int H = 80;
         public bool Header, Center;
         public string Title = "", Sub;
+        public Func<string> TitleF;   // 글자가 계속 바뀌는 줄 (실시간 값)
         public Func<string> Right;
         public Color RightColor = Th.Accent;
         public Image Icon;
@@ -114,13 +115,14 @@ namespace MiniCheat
                 right -= tw + Th.S(12);
             }
             var tf = TextFormatFlags.Left | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine;
+            string ttl = TitleF != null ? TitleF() : Title;
             Color tc = Dim ? Color.FromArgb(160, 165, 175) : Th.Text;
             if (string.IsNullOrEmpty(Sub))
-                TextRenderer.DrawText(g, Title, Th.F(16), new Rectangle(x, r.Y, right - x, r.Height), tc, tf | TextFormatFlags.VerticalCenter);
+                TextRenderer.DrawText(g, ttl, Th.F(16), new Rectangle(x, r.Y, right - x, r.Height), tc, tf | TextFormatFlags.VerticalCenter);
             else
             {
                 int mid = r.Y + r.Height / 2;
-                TextRenderer.DrawText(g, Title, Th.F(16), new Rectangle(x, r.Y + Th.S(8), right - x, mid - r.Y - Th.S(6)), tc, tf | TextFormatFlags.Bottom);
+                TextRenderer.DrawText(g, ttl, Th.F(16), new Rectangle(x, r.Y + Th.S(8), right - x, mid - r.Y - Th.S(6)), tc, tf | TextFormatFlags.Bottom);
                 TextRenderer.DrawText(g, Sub, Th.F(12), new Rectangle(x, mid + Th.S(2), right - x, r.Bottom - mid - Th.S(10)), Th.Sub, tf | TextFormatFlags.Top);
             }
         }
@@ -249,6 +251,13 @@ namespace MiniCheat
             pressIdx = -1;
             Invalidate();
             if (i >= 0 && RowAt(e.Y) == i && rows[i].Tap != null) rows[i].Tap();
+        }
+
+        public void ScrollBy(int dy)
+        {
+            inertia.Stop();
+            scroll = Clamp(scroll + dy);
+            Invalidate();
         }
 
         protected override void OnMouseWheel(MouseEventArgs e)
@@ -445,10 +454,32 @@ namespace MiniCheat
         public static void Info(IWin32Window owner, string message) { Choose(owner, message, "확인"); }
     }
 
+    // ───────── 페이지를 담는 곳 (전체 화면 게임기 모드 / 게임 옆 팝업) ─────────
+    interface IMHost
+    {
+        MainForm Main { get; }
+        IWin32Window Win { get; }
+        bool CanType { get; }   // 글자 칸에 타자 가능? (팝업은 포커스를 안 가져가서 못 함)
+        void Push(MPage p);
+        void Pop();
+        void Chrome();
+        void Toast(string text);
+        void SaveModelNow(SaveModel m);
+        void Translate(GameData g, Action done);
+        void AskValue(string title, double cur, double min, double max, Action<double> ok);
+        void AskNumber(double cur, bool neg, Action<double> ok);
+        void Choose(string message, string[] options, Action<int> pick);
+    }
+
+    static class MHostExt
+    {
+        public static void Info(this IMHost h, string m) { h.Choose(m, new[] { "확인" }, r => { }); }
+    }
+
     // ───────── 페이지 틀 ─────────
     class MPage : Panel
     {
-        public MobileForm M;
+        public IMHost M;
         public string Title = "";
         public string RightText;
         public Action RightAction;
@@ -460,7 +491,7 @@ namespace MiniCheat
         public MPage() { BackColor = Th.Bg; }
         public virtual void Build() { Controls.Add(List); }
         public virtual void OnShow() { }
-        public virtual bool CanLeave() { return true; }
+        public virtual void TryLeave(Action leave) { leave(); }
     }
 
     // 세이브 편집 페이지들은 아래에 '저장하기' 바가 늘 붙음
@@ -477,9 +508,14 @@ namespace MiniCheat
         protected void Changed() { OnShow(); M.Chrome(); }
     }
 
-    class MobileForm : Form
+    class MobileForm : Form, IMHost
     {
-        public readonly MainForm Main;
+        public MainForm Main { get; private set; }
+        public IWin32Window Win { get { return this; } }
+        public bool CanType { get { return true; } }
+        public void AskValue(string title, double cur, double min, double max, Action<double> ok) { var v = ValuePopup.Ask(this, title, cur, min, max); if (v.HasValue) ok(v.Value); }
+        public void AskNumber(double cur, bool neg, Action<double> ok) { var v = NumPad.Ask(this, cur, neg, true); if (v.HasValue) ok((double)v.Value); }
+        public void Choose(string message, string[] options, Action<int> pick) { int r = MDialog.Choose(this, message, options); if (r >= 0) pick(r); }
         readonly Stack<MPage> stack = new Stack<MPage>();
         readonly Panel header, bottom, host;
         readonly MBtn btnBack, btnRight, btnBottom;
@@ -538,8 +574,13 @@ namespace MiniCheat
         public void Pop()
         {
             if (stack.Count <= 1) return;
+            stack.Peek().TryLeave(DoPop);
+        }
+
+        void DoPop()
+        {
+            if (stack.Count <= 1) return;
             var p = stack.Peek();
-            if (!p.CanLeave()) return;
             stack.Pop();
             host.Controls.Remove(p);
             p.Dispose();
@@ -669,14 +710,14 @@ namespace MiniCheat
         void Add()
         {
             using (var f = new OpenFileDialog { Title = "게임 폴더 안의 Game.exe (또는 실행 파일)를 골라 주세요", Filter = "게임 실행 파일|*.exe|모든 파일|*.*" })
-                if (f.ShowDialog(this) == DialogResult.OK) Open(Path.GetDirectoryName(f.FileName));
+                if (f.ShowDialog(M.Win) == DialogResult.OK) Open(Path.GetDirectoryName(f.FileName));
         }
 
         void Open(string root)
         {
             GameData g;
             try { g = GameData.Load(root); }
-            catch (Exception ex) { MDialog.Info(M, "게임을 열지 못했어요\n" + ex.Message); return; }
+            catch (Exception ex) { M.Info("게임을 열지 못했어요\n" + ex.Message); return; }
             Backup.RememberGame(root);
             M.Push(new SlotsPage(g));
         }
@@ -717,9 +758,9 @@ namespace MiniCheat
         }
         void Open(SaveSlot s)
         {
-            if (!db.CanEdit) { MDialog.Info(M, "이 게임은 세이브 수정을 아직 못 해요.\n오른쪽 위 '백업'에서 백업·복원은 할 수 있어요."); return; }
+            if (!db.CanEdit) { M.Info("이 게임은 세이브 수정을 아직 못 해요.\n오른쪽 위 '백업'에서 백업·복원은 할 수 있어요."); return; }
             try { M.Push(new SaveHomePage(SaveModel.Open(db, s))); }
-            catch (Exception ex) { MDialog.Info(M, "세이브를 읽지 못했어요\n" + ex.Message); }
+            catch (Exception ex) { M.Info("세이브를 읽지 못했어요\n" + ex.Message); }
         }
     }
 
@@ -746,7 +787,11 @@ namespace MiniCheat
         }
         void Restore(string[] b)
         {
-            if (MDialog.Choose(M, b[1] + " 을(를)\n" + b[0] + " 상태로 되돌릴까요?", "되돌리기", "취소") != 0) return;
+            M.Choose(b[1] + " 을(를)\n" + b[0] + " 상태로 되돌릴까요?", new[] { "되돌리기", "취소" }, r => { if (r == 0) DoRestore(b); });
+        }
+
+        void DoRestore(string[] b)
+        {
             try
             {
                 string dst = Path.Combine(db.SaveDir, b[1]);
@@ -759,7 +804,7 @@ namespace MiniCheat
                 M.Toast("되돌렸어요. 게임에서 다시 불러오세요");
                 OnShow();
             }
-            catch (Exception ex) { MDialog.Info(M, "되돌리지 못했어요\n" + ex.Message); }
+            catch (Exception ex) { M.Info("되돌리지 못했어요\n" + ex.Message); }
         }
     }
 
@@ -773,24 +818,26 @@ namespace MiniCheat
             {
                 new MRow { Header = true, Title = db.Title },
                 new MRow { H = 92, Title = "돈", Right = () => Th.N(Model.Gold) + " " + db.Currency, Tap = () =>
-                    { var v = ValuePopup.Ask(M, "돈", Model.Gold, 0, Model.MaxGold); if (v.HasValue) { Model.Gold = v.Value; Changed(); } } },
+                    M.AskValue("돈", Model.Gold, 0, Model.MaxGold, v => { Model.Gold = v; Changed(); }) },
                 new MRow { Title = "파티 (캐릭터)", Right = () => Model.PartyIds().Count + "명", Chevron = true, Tap = () => M.Push(new PartyPage(Model)) },
                 new MRow { Title = "가방 (아이템 · 장비)", Chevron = true, Tap = () => M.Push(new BagPage(Model)) },
                 new MRow { Title = "스위치", Sub = "켜고 끄기", Chevron = true, Tap = () => M.Push(new FlagsPage(Model, true)) },
                 new MRow { Title = "변수", Sub = "숫자 바꾸기", Chevron = true, Tap = () => M.Push(new FlagsPage(Model, false)) },
                 new MRow { Header = true, Title = "기록" },
                 new MRow { Title = "플레이 시간", Right = () => { double s = Model.PlaySeconds; return (long)(s / 3600) + "시간 " + (long)(s / 60 % 60) + "분"; }, Tap = () =>
-                    { double s = Model.PlaySeconds; var v = ValuePopup.Ask(M, "플레이 시간 (시간)", Math.Floor(s / 3600), 0, 9999); if (v.HasValue) { Model.PlaySeconds = v.Value * 3600 + s % 3600; Changed(); } } },
+                    { double s = Model.PlaySeconds; M.AskValue("플레이 시간 (시간)", Math.Floor(s / 3600), 0, 9999, v => { Model.PlaySeconds = v * 3600 + s % 3600; Changed(); }); } },
                 new MRow { Title = "걸음 수", Right = () => Th.N(Model.Steps), Tap = () =>
-                    { var v = ValuePopup.Ask(M, "걸음 수", Model.Steps, 0, 9999999); if (v.HasValue) { Model.Steps = v.Value; Changed(); } } },
+                    M.AskValue("걸음 수", Model.Steps, 0, 9999999, v => { Model.Steps = v; Changed(); }) },
             });
         }
-        public override bool CanLeave()
+        public override void TryLeave(Action leave)
         {
-            if (!Model.Dirty) return true;
-            int r = MDialog.Choose(M, "저장하지 않은 내용이 있어요", "저장하고 나가기", "저장 안 하고 나가기", "취소");
-            if (r == 0) { M.SaveModelNow(Model); return !Model.Dirty; }
-            return r == 1;
+            if (!Model.Dirty) { leave(); return; }
+            M.Choose("저장하지 않은 내용이 있어요", new[] { "저장하고 나가기", "저장 안 하고 나가기", "취소" }, r =>
+            {
+                if (r == 0) { M.SaveModelNow(Model); if (!Model.Dirty) leave(); }
+                else if (r == 1) leave();
+            });
         }
     }
 
@@ -823,8 +870,7 @@ namespace MiniCheat
 
         void Num(string title, double cur, double min, double max, Action<double> set)
         {
-            var v = ValuePopup.Ask(M, title, cur, min, max);
-            if (v.HasValue) { set(v.Value); Changed(); }
+            M.AskValue(title, cur, min, max, v => { set(v); Changed(); });
         }
 
         public override void OnShow()
@@ -874,7 +920,7 @@ namespace MiniCheat
                 rows.Add(new MRow
                 {
                     H = 72, Icon = db.Icon(s == null ? 0 : s.Icon, Th.S(44)), IconSize = 44, Title = nm,
-                    Tap = () => { if (MDialog.Choose(M, nm + "\n이 스킬을 잊게 할까요?", "잊게 하기", "취소") == 0) { Model.RemoveSkill(a, sid); Changed(); } }
+                    Tap = () => M.Choose(nm + "\n이 스킬을 잊게 할까요?", new[] { "잊게 하기", "취소" }, r => { if (r == 0) { Model.RemoveSkill(a, sid); Changed(); } })
                 });
             }
             rows.Add(new MRow
@@ -901,6 +947,7 @@ namespace MiniCheat
         public override void Build()
         {
             base.Build();
+            if (!M.CanType) return;
             search = new MSearch("이름으로 찾기");
             Controls.Add(search);
             search.Box.TextChanged += (s, e) => OnShow();
@@ -930,11 +977,15 @@ namespace MiniCheat
         public override void Build()
         {
             base.Build();
-            search = new MSearch("이름으로 찾기");
             seg = new MSegment("아이템", "무기", "방어구", "중요");
-            Controls.Add(search); Controls.Add(seg);
+            if (M.CanType)
+            {
+                search = new MSearch("이름으로 찾기");
+                Controls.Add(search);
+                search.Box.TextChanged += (s, e) => OnShow();
+            }
+            Controls.Add(seg);
             seg.Changed += () => OnShow();
-            search.Box.TextChanged += (s, e) => OnShow();
         }
         public override void OnShow()
         {
@@ -943,7 +994,7 @@ namespace MiniCheat
             {
                 new MRow { H = 72, Title = "안 가진 것도 보기", Toggle = () => all, Tap = () => { all = !all; OnShow(); } }
             };
-            var list = Model.BagItems(seg.Selected, all, search.Box.Text);
+            var list = Model.BagItems(seg.Selected, all, search == null ? "" : search.Box.Text);
             foreach (var it in list)
             {
                 var x = it;
@@ -951,11 +1002,7 @@ namespace MiniCheat
                 {
                     H = 84, Icon = db.Icon(it.Icon, Th.S(48)), IconSize = 48, Title = it.Name, Sub = it.Desc,
                     Right = () => "×" + Model.Count(x), Dim = Model.Count(it) == 0,
-                    Tap = () =>
-                    {
-                        var v = ValuePopup.Ask(M, x.Name, Model.Count(x), 0, Model.MaxCount);
-                        if (v.HasValue) { Model.SetCount(x, (int)v.Value); Changed(); }
-                    }
+                    Tap = () => M.AskValue(x.Name, Model.Count(x), 0, Model.MaxCount, v => { Model.SetCount(x, (int)v); Changed(); })
                 });
             }
             if (list.Count == 0) rows.Add(new MRow { Title = all ? "이 칸에는 아이템이 없어요" : "가진 게 없어요. 위 스위치를 켜면 전부 보여요", Dim = true });
@@ -972,15 +1019,18 @@ namespace MiniCheat
         public override void Build()
         {
             base.Build();
-            search = new MSearch("이름이나 번호로 찾기");
-            Controls.Add(search);
-            search.Box.TextChanged += (s, e) => OnShow();
+            if (M.CanType)
+            {
+                search = new MSearch("이름이나 번호로 찾기");
+                Controls.Add(search);
+                search.Box.TextChanged += (s, e) => OnShow();
+            }
             var names = sw ? Model.Db.SwitchNames : Model.Db.VarNames;
             named = names.Any(n => n.Length > 0);
         }
         public override void OnShow()
         {
-            string f = search.Box.Text.Trim();
+            string f = search == null ? "" : search.Box.Text.Trim();
             var rows = new List<MRow> { new MRow { H = 72, Title = "이름 붙은 것만 보기", Toggle = () => named, Tap = () => { named = !named; OnShow(); } } };
             int n = Model.FlagCount(sw);
             for (int i = 1; i < n; i++)
@@ -997,9 +1047,8 @@ namespace MiniCheat
                     Right = () => Model.VarIsNumber(k) ? Th.N(Model.GetVar(k)) : "(글자·목록)",
                     Tap = () =>
                     {
-                        if (!Model.VarIsNumber(k)) { MDialog.Info(M, "이 변수는 숫자가 아니라서 여기서는 못 바꿔요"); return; }
-                        var v = ValuePopup.Ask(M, title, Model.GetVar(k), -99999999, 99999999);
-                        if (v.HasValue) { Model.SetVar(k, v.Value); Changed(); }
+                        if (!Model.VarIsNumber(k)) { M.Info("이 변수는 숫자가 아니라서 여기서는 못 바꿔요"); return; }
+                        M.AskValue(title, Model.GetVar(k), -99999999, 99999999, v => { Model.SetVar(k, v); Changed(); });
                     }
                 });
             }
@@ -1061,15 +1110,11 @@ namespace MiniCheat
                 new MRow { Header = true, Title = "게임" },
                 new MRow { H = 92, Title = mf.HasProcess ? mf.ProcText : "실행 중인 게임을 골라 주세요", Dim = !mf.HasProcess, Chevron = true, Tap = () => M.Push(new ProcPage()) },
                 new MRow { Header = true, Title = "찾기" },
-                new MRow { Title = "찾을 값", Right = () => mf.ValueText.Length > 0 ? mf.ValueText : "눌러서 입력", Tap = () =>
-                    {
-                        double cur; double.TryParse(mf.ValueText, out cur);
-                        var v = NumPad.Ask(M, cur, true, true);
-                        if (v.HasValue) { mf.ValueText = JVal.Fmt((double)v.Value); List.Invalidate(); }
-                    } },
+                new MRow { Title = "찾을 값", Right = () => mf.ValueText.Length > 0 ? Th.N(Num(mf.ValueText)) : "눌러서 입력", Tap = () =>
+                        M.AskNumber(Num(mf.ValueText), true, v => { mf.ValueText = JVal.Fmt(v); List.Invalidate(); }) },
                 new MRow { Title = "형식", Right = () => mf.KindList[mf.KindIndex], Tap = () =>
                     {
-                        if (mf.Scanned) { MDialog.Info(M, "검색 중에는 형식을 바꿀 수 없어요.\n'처음부터 새 검색'을 먼저 눌러 주세요."); return; }
+                        if (mf.Scanned) { M.Info("검색 중에는 형식을 바꿀 수 없어요.\n'처음부터 새 검색'을 먼저 눌러 주세요."); return; }
                         M.Push(new ChoicePage("형식", mf.KindList, mf.KindIndex, i => mf.KindIndex = i));
                     } },
                 new MRow { Title = "검색 방식", Right = () => mf.CmpList[mf.CmpIndex], Tap = () => M.Push(new ChoicePage("검색 방식", mf.CmpList, mf.CmpIndex, i => mf.CmpIndex = i)) },
@@ -1100,8 +1145,9 @@ namespace MiniCheat
                 int idx = i;
                 rows.Add(new MRow
                 {
-                    H = 84, Title = sv.Desc, Sub = sv.Addr.ToString("X") + (sv.Frozen ? "  ·  고정 중" : ""),
-                    Right = () => Val.Format(Scanner.ReadValue(mf.H, sv.Addr, sv.Kind), sv.Kind), RightColor = sv.Frozen ? Th.Green : Th.Accent,
+                    H = 84, TitleF = () => sv.Desc + "   " + Val.Format(Scanner.ReadValue(mf.H, sv.Addr, sv.Kind), sv.Kind),
+                    Sub = (sv.Frozen ? "고정 중 · " : "") + "누르면 바꾸기·고정",
+                    Toggle = () => sv.Frozen,
                     Tap = () => SavedMenu(idx)
                 });
             }
@@ -1113,28 +1159,46 @@ namespace MiniCheat
         {
             var mf = M.Main;
             if (busy) return;
-            if (!mf.HasProcess) { MDialog.Info(M, "먼저 실행 중인 게임을 골라 주세요"); return; }
+            if (!mf.HasProcess) { M.Info("먼저 실행 중인 게임을 골라 주세요"); return; }
+            if (mf.CmpList[mf.CmpIndex] == "정확한 값" && mf.ValueText.Trim().Length == 0) { M.Info("찾을 값을 먼저 넣어 주세요"); return; }
             busy = true; OnShow();
             await mf.DoScan(first);
             busy = false;
             OnShow();
         }
 
+        static double Num(string s) { double d; double.TryParse((s ?? "").Replace(",", ""), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out d); return d; }
+
         void SavedMenu(int i)
         {
             var mf = M.Main;
             var sv = mf.SavedList[i];
-            int r = MDialog.Choose(M, sv.Desc, "값 바꾸기", sv.Frozen ? "고정 풀기" : "값 고정하기", "이름 바꾸기", "삭제", "취소");
-            if (r == 0)
+            var opts = new List<string> { "값 바꾸기", sv.Frozen ? "고정 풀기" : "값 고정하기" };
+            // 이름은 타자가 되면 직접, 아니면 자주 쓰는 이름 중에서
+            opts.Add("이름 바꾸기");
+            opts.Add("삭제"); opts.Add("취소");
+            M.Choose(sv.Desc, opts.ToArray(), r =>
             {
-                double cur = Scanner.ReadValue(mf.H, sv.Addr, sv.Kind);
-                var v = ValuePopup.Ask(M, sv.Desc, double.IsNaN(cur) ? 0 : cur, Val.IsFloat(sv.Kind) ? -1e9 : -99999999, 999999999);
-                if (v.HasValue) mf.SetSavedValue(i, v.Value);
-            }
-            else if (r == 1) mf.ToggleFreeze(i);
-            else if (r == 2) { string t = Prompt.Show(M, "이름 바꾸기", "이름 (예: 골드):", sv.Desc); if (!string.IsNullOrWhiteSpace(t)) mf.RenameSaved(i, t.Trim()); }
-            else if (r == 3) mf.RemoveSaved(i);
-            OnShow();
+                if (r == 0)
+                {
+                    double cur = Scanner.ReadValue(mf.H, sv.Addr, sv.Kind);
+                    M.AskValue(sv.Desc, double.IsNaN(cur) ? 0 : cur, Val.IsFloat(sv.Kind) ? -1e9 : -99999999, 999999999, v => { mf.SetSavedValue(i, v); OnShow(); });
+                    return;
+                }
+                if (r == 1) mf.ToggleFreeze(i);
+                else if (r == 2)
+                {
+                    if (M.CanType) { string t = Prompt.Show(M.Win, "이름 바꾸기", "이름 (예: 골드):", sv.Desc); if (!string.IsNullOrWhiteSpace(t)) mf.RenameSaved(i, t.Trim()); }
+                    else
+                    {
+                        string[] names = { "골드", "HP", "MP", "경험치", "레벨", "공격력", "방어력", "아이템 개수", "취소" };
+                        M.Choose("이름 고르기", names, k => { if (k < names.Length - 1) { mf.RenameSaved(i, names[k]); OnShow(); } });
+                        return;
+                    }
+                }
+                else if (r == 3) mf.RemoveSaved(i);
+                OnShow();
+            });
         }
     }
 }
