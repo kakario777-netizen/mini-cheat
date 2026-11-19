@@ -82,9 +82,20 @@ namespace MiniCheat
         [StructLayout(LayoutKind.Sequential)]
         struct COPYDATA { public IntPtr Data; public int Size; public IntPtr Ptr; }
 
+        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
+        [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+        IntPtr gameWin;
+
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == 0x21) { m.Result = (IntPtr)3; return; }   // WM_MOUSEACTIVATE → 포커스 안 가져감
+            // 그래도 누가 이 창을 앞으로 올리면(런처가 '앞으로' 하는 경우 등) 바로 게임에 포커스를 돌려줌
+            if (m.Msg == 0x06 && ((long)m.WParam & 0xFFFF) != 0 && gameWin != IntPtr.Zero && gameWin != Handle)
+            {
+                var g = gameWin;
+                BeginInvoke((Action)(() => { try { if (IsWindow(g)) SetForegroundWindow(g); } catch { } }));
+            }
             if (m.Msg == 0x4A)                                    // WM_COPYDATA: 런처가 보내는 명령
             {
                 try
@@ -128,6 +139,7 @@ namespace MiniCheat
 
         void ShowPanel(string dir, int pid)
         {
+            try { var fg = GetForegroundWindow(); if (fg != Handle) gameWin = fg; } catch { }
             ConnectGame(dir, pid);
             if (stacks[0].Count == 0) { PushTo(0, new MemPage()); }
             if (stacks[1].Count == 0) { saveRoot = new PanelSaveRoot(this); PushTo(1, saveRoot); saveRoot.SetGame(connectedDir); }

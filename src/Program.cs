@@ -13,10 +13,12 @@ namespace MiniCheat
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             string[] args = Environment.GetCommandLineArgs().Skip(1).ToArray();
-            if (args.Contains("--panel"))
+            // 쯔꾸르 런처가 게임 중에 켰으면(인수 없이도) 런처 팝업 자리에 팝업 모드로
+            string autoCmd = args.Contains("--panel") ? null : LaunchContext.PanelCommand();
+            if (args.Contains("--panel") || autoCmd != null)
             {
-                // 쯔꾸르 런처의 「치트 모드」: 게임 옆 팝업. 이미 켜져 있으면 명령만 넘기고 끝
-                string cmd = CheatPanel.CommandFromArgs(args);
+                // 게임 옆 팝업. 이미 켜져 있으면 명령만 넘기고 끝
+                string cmd = autoCmd ?? CheatPanel.CommandFromArgs(args);
                 if (CheatPanel.SendToRunning(cmd)) return;
                 var main = new MainForm();
                 var panel = new CheatPanel(main);
