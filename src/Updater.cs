@@ -76,7 +76,7 @@ namespace MiniCheat
             if (File.Exists(old)) File.Delete(old);
             File.Move(exe, old);
             File.Move(nw, exe);
-            Process.Start(exe);
+            if (LaunchContext.FromLauncher) Process.Start(exe, "--launcher"); else Process.Start(exe);
             Environment.Exit(0);
         }
     }
